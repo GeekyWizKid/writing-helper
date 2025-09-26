@@ -3,24 +3,47 @@
 import React, { useState, useEffect } from 'react';
 import { SecureApiKeyManager } from '../lib/secureApiKey';
 
-export type ApiProvider = 'openai' | 'grok' | 'ollama' | 'deepseek' | 'custom';
+export type ApiProvider =
+  | 'openai'
+  | 'openai-compatible'
+  | 'grok'
+  | 'ollama'
+  | 'deepseek'
+  | 'gemini-vertex'
+  | 'custom';
 
 // API 提供商帮助信息
 const API_HELP: Record<ApiProvider, string> = {
   openai: '使用 OpenAI API，例如 GPT-4',
+  'openai-compatible': '连接任意兼容 OpenAI Chat Completions 的服务',
   grok: '使用 Grok API (X.AI)',
   ollama: '使用本地运行的 Ollama 服务',
   deepseek: '使用 DeepSeek API，例如 DeepSeek-V2',
+  'gemini-vertex': '使用 Google Vertex AI Gemini 模型（需要 GCP 项目）',
   custom: '配置自定义 API 端点'
 };
 
 // 默认 API URLs
 const API_URLS: Record<ApiProvider, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
-  grok: 'https://api.x.ai/v1/chat/completions',
+  'openai-compatible': 'https://your-openai-compatible-endpoint/v1/chat/completions',
+  grok: 'https://api.grok.ai/v1/chat/completions',
   ollama: 'http://localhost:11434/api/generate',  // 确保使用 /api/generate 端点
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
+  'gemini-vertex': 'https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/gemini-1.5-pro:generateContent',
   custom: ''
+};
+
+const DEFAULT_PROVIDER_OPTIONS: ApiProvider[] = ['openai', 'grok', 'ollama', 'deepseek', 'custom'];
+
+const PROVIDER_LABELS: Record<ApiProvider, string> = {
+  openai: 'OpenAI',
+  'openai-compatible': 'OpenAI 兼容服务',
+  grok: 'Grok (xAI)',
+  ollama: 'Ollama (本地)',
+  deepseek: 'DeepSeek',
+  'gemini-vertex': 'Google Gemini (Vertex AI)',
+  custom: '自定义'
 };
 
 export interface ApiSettingsProps {
@@ -37,6 +60,9 @@ export interface ApiSettingsProps {
   // 仅在使用 Ollama 时需要
   availableModels?: string[];
   fetchModels?: () => Promise<string[] | void>;
+  providerOptions?: ApiProvider[];
+  geminiProjectId?: string;
+  setGeminiProjectId?: (projectId: string) => void;
 }
 
 export default function ApiSettings({
@@ -51,7 +77,10 @@ export default function ApiSettings({
   model,
   setModel,
   availableModels = [],
-  fetchModels
+  fetchModels,
+  providerOptions = DEFAULT_PROVIDER_OPTIONS,
+  geminiProjectId,
+  setGeminiProjectId
 }: ApiSettingsProps) {
   const [rememberMe, setRememberMe] = useState(false);
   const [showSecurityTip, setShowSecurityTip] = useState(false);
@@ -116,6 +145,8 @@ export default function ApiSettings({
     // 设置默认模型名称
     if (provider === 'openai') {
       setModel('gpt-4');
+    } else if (provider === 'openai-compatible') {
+      setModel('gpt-4o-mini');
     } else if (provider === 'grok') {
       setModel('grok-3-latest');
     } else if (provider === 'ollama') {
@@ -131,6 +162,11 @@ export default function ApiSettings({
       }
     } else if (provider === 'deepseek') {
       setModel('deepseek-chat');
+    } else if (provider === 'gemini-vertex') {
+      setModel('gemini-1.5-pro');
+      if (setGeminiProjectId) {
+        setGeminiProjectId('');
+      }
     }
     // 自定义提供商不设置默认模型
   };
@@ -166,15 +202,25 @@ export default function ApiSettings({
               onChange={handleApiProviderChange}
               className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
             >
-              <option value="openai">OpenAI</option>
-              <option value="grok">Grok (xAI)</option>
-              <option value="ollama">Ollama (本地)</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="custom">自定义</option>
+              {providerOptions.map(option => (
+                <option key={option} value={option}>
+                  {PROVIDER_LABELS[option]}
+                </option>
+              ))}
             </select>
             <p className="mt-1 text-xs text-gray-500">
               {API_HELP[apiProvider]}
             </p>
+            {apiProvider === 'openai-compatible' && (
+              <p className="mt-1 text-xs text-blue-500">
+                请填写兼容 OpenAI Chat Completions 协议的完整接口地址。
+              </p>
+            )}
+            {apiProvider === 'gemini-vertex' && (
+              <p className="mt-1 text-xs text-blue-500">
+                需要提供 Vertex AI REST 接口地址，并确保帐号具有访问权限。
+              </p>
+            )}
           </div>
 
           <div>
@@ -194,7 +240,7 @@ export default function ApiSettings({
           <div>
             <div className="flex items-center justify-between mb-1">
               <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700">
-                API 密钥
+                {apiProvider === 'gemini-vertex' ? 'Access Token (OAuth)' : 'API 密钥'}
               </label>
               <button
                 type="button"
@@ -239,7 +285,7 @@ export default function ApiSettings({
                     value={apiKey}
                     onChange={handleApiKeyChange}
                     className="block w-full px-3 py-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    placeholder="输入您的 API 密钥"
+                    placeholder={apiProvider === 'gemini-vertex' ? '请输入 Access Token' : '输入您的 API 密钥'}
                   />
                   {apiKey && (
                     <button
@@ -275,9 +321,28 @@ export default function ApiSettings({
                     </span>
                   )}
                 </div>
+                {apiProvider === 'gemini-vertex' && (
+                  <p className="text-xs text-blue-500">可使用 gcloud auth print-access-token 获取临时 Token。</p>
+                )}
               </div>
             )}
           </div>
+
+          {apiProvider === 'gemini-vertex' && setGeminiProjectId && (
+            <div>
+              <label htmlFor="geminiProject" className="block text-sm font-medium text-gray-700 mb-1">
+                Google Cloud 项目 ID
+              </label>
+              <input
+                type="text"
+                id="geminiProject"
+                value={geminiProjectId || ''}
+                onChange={(e) => setGeminiProjectId(e.target.value)}
+                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                placeholder="例如 my-gcp-project"
+              />
+            </div>
+          )}
 
           <div>
             <label htmlFor="model" className="block text-sm font-medium text-gray-700 mb-1">

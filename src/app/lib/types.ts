@@ -52,6 +52,8 @@ export interface WritingRequest {
   llmApiUrl: string;
   llmApiKey: string;
   model: string;
+  apiProvider?: string;
+  additionalHeaders?: Record<string, string>;
 }
 
 export interface PolishRequest {
@@ -59,6 +61,8 @@ export interface PolishRequest {
   llmApiUrl: string;
   llmApiKey: string;
   model: string;
+  apiProvider?: string;
+  additionalHeaders?: Record<string, string>;
   polishType?: 'standard' | 'academic' | 'business' | 'creative';
 }
 

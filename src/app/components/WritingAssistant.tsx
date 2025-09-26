@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { PromptStyle, WritingRequest } from '../lib/types';
 import { generateContent, generateContentStream, exportToMarkdown } from '../lib/api';
 import PromptForm from './PromptForm';
 import ApiSettings, { ApiProvider } from './ApiSettings';
 import StreamingContent from './StreamingContent';
+import MarkdownEditor from './MarkdownEditor';
 
 // Default prompt style template
 const defaultPromptStyle: PromptStyle = {
@@ -60,10 +61,22 @@ const defaultPromptStyle: PromptStyle = {
 // 默认 API URLs
 const API_URLS: Record<ApiProvider, string> = {
   openai: 'https://api.openai.com/v1/chat/completions',
+  'openai-compatible': 'https://your-openai-compatible-endpoint/v1/chat/completions',
   grok: 'https://api.grok.ai/v1/chat/completions',
   ollama: 'http://localhost:11434/api/generate',
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
+  'gemini-vertex': 'https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/gemini-1.5-pro:generateContent',
   custom: ''
+};
+
+const PROVIDER_DISPLAY: Record<ApiProvider, string> = {
+  openai: 'OpenAI',
+  'openai-compatible': 'OpenAI 兼容服务',
+  grok: 'Grok',
+  ollama: 'Ollama',
+  deepseek: 'DeepSeek',
+  'gemini-vertex': 'Google Gemini (Vertex)',
+  custom: '自定义'
 };
 
 export default function WritingAssistant() {
@@ -77,8 +90,12 @@ export default function WritingAssistant() {
   const [llmApiUrl, setLlmApiUrl] = useState<string>(API_URLS.openai);
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [model, setModel] = useState<string>('gpt-4'); // 添加模型设置
-  
-  const [output, setOutput] = useState<string>('');
+  const [geminiProjectId, setGeminiProjectId] = useState<string>('');
+
+  const [articleContent, setArticleContent] = useState<string>('');
+  const [currentGeneration, setCurrentGeneration] = useState<string>('');
+  const currentGenerationRef = useRef<string>('');
+  const streamingPreferenceRef = useRef<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [apiResponseDetails, setApiResponseDetails] = useState<string | null>(null);
@@ -171,6 +188,41 @@ export default function WritingAssistant() {
     }
   };
 
+  const appendArticleContent = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    setArticleContent(prev => {
+      if (!prev) {
+        return trimmed;
+      }
+
+      let base = prev;
+
+      if (!base.endsWith('\n')) {
+        base += '\n';
+      }
+
+      if (!base.endsWith('\n\n')) {
+        base += '\n';
+      }
+
+      return `${base}${trimmed}`;
+    });
+  };
+
+  const handleStreamingToggle = (checked: boolean) => {
+    if (apiProvider === 'gemini-vertex') {
+      setUseStreaming(false);
+      return;
+    }
+
+    streamingPreferenceRef.current = checked;
+    setUseStreaming(checked);
+  };
+
   const handleKeywordsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setKeywords(e.target.value);
   };
@@ -180,16 +232,23 @@ export default function WritingAssistant() {
     setIsLoading(true);
     setError(null);
     setApiResponseDetails(null);
-    setOutput('');
-    setIsStreaming(useStreaming);
     setIsComplete(false);
+
+    const streamingEnabled = useStreaming && apiProvider !== 'gemini-vertex';
+    setIsStreaming(streamingEnabled);
+    setCurrentGeneration('');
+    currentGenerationRef.current = '';
 
     try {
       // 检查 API 密钥
       if (apiProvider !== 'ollama' && !llmApiKey) {
-        throw new Error(`使用 ${apiProvider === 'openai' ? 'OpenAI' : apiProvider === 'grok' ? 'Grok' : apiProvider === 'deepseek' ? 'DeepSeek' : '自定义'} API 需要提供有效的 API 密钥`);
+        throw new Error(`使用 ${PROVIDER_DISPLAY[apiProvider]} API 需要提供有效的 API 密钥`);
       }
-      
+
+      if (apiProvider === 'gemini-vertex' && !geminiProjectId.trim()) {
+        throw new Error('使用 Google Gemini (Vertex) 需要提供 Google Cloud 项目 ID');
+      }
+
       // 确保使用正确的 URL 端点
       let apiUrl = llmApiUrl;
       if (apiProvider === 'ollama' && !llmApiUrl.includes('/api/generate')) {
@@ -208,12 +267,16 @@ export default function WritingAssistant() {
         wordCount,
         llmApiUrl: apiUrl,
         llmApiKey,
-        model
+        model,
+        apiProvider,
+        additionalHeaders: apiProvider === 'gemini-vertex' && geminiProjectId.trim()
+          ? { 'X-Goog-User-Project': geminiProjectId.trim() }
+          : undefined
       };
 
-      console.log(`开始请求 ${apiProvider} API，使用模型: ${model}，流式模式: ${useStreaming}`);
-      
-      if (useStreaming) {
+      console.log(`开始请求 ${apiProvider} API，使用模型: ${model}，流式模式: ${streamingEnabled}`);
+
+      if (streamingEnabled) {
         // 使用流式输出
         await generateContentStream(request, (chunk, isCompleteChunk, errorMsg) => {
           if (errorMsg) {
@@ -221,18 +284,30 @@ export default function WritingAssistant() {
             setApiResponseDetails('请查看浏览器控制台以获取更多错误详情。');
             setIsStreaming(false);
             setIsComplete(true);
+            setCurrentGeneration('');
+            currentGenerationRef.current = '';
           } else if (isCompleteChunk) {
             setIsStreaming(false);
             setIsComplete(true);
             console.log('流式生成完成');
+            const finalText = currentGenerationRef.current;
+            if (finalText.trim()) {
+              appendArticleContent(finalText);
+            }
+            setCurrentGeneration('');
+            currentGenerationRef.current = '';
           } else if (chunk) {
-            setOutput(prev => prev + chunk);
+            setCurrentGeneration(prev => {
+              const updated = prev + chunk;
+              currentGenerationRef.current = updated;
+              return updated;
+            });
           }
         });
       } else {
         // 使用传统的一次性生成
         const response = await generateContent(request);
-        
+
         if (response.error) {
           setError(response.error);
           setApiResponseDetails('请查看浏览器控制台以获取更多错误详情。');
@@ -240,7 +315,7 @@ export default function WritingAssistant() {
           setError('API 返回了空内容。这可能是由于 API 响应格式不符合预期。');
           setApiResponseDetails('请尝试切换 API 提供商或检查 API 密钥和 URL 是否正确。');
         } else {
-          setOutput(response.content);
+          appendArticleContent(response.content);
           setIsComplete(true);
         }
       }
@@ -249,7 +324,9 @@ export default function WritingAssistant() {
       setError(errorMessage);
       setIsStreaming(false);
       setIsComplete(true);
-      
+      setCurrentGeneration('');
+      currentGenerationRef.current = '';
+
       // 添加更多帮助信息
       if (errorMessage.includes('Failed to fetch') || errorMessage.includes('网络')) {
         setApiResponseDetails('这可能是由于网络连接问题或 CORS 限制导致的。请确保您的网络连接稳定，并且 API 服务允许从您的网站发出请求。');
@@ -264,8 +341,8 @@ export default function WritingAssistant() {
   };
 
   const handleExport = () => {
-    if (output) {
-      exportToMarkdown(output);
+    if (articleContent) {
+      exportToMarkdown(articleContent);
     }
   };
 
@@ -330,16 +407,20 @@ export default function WritingAssistant() {
                   </div>
 
                   {showApiSettings && (
-                    <ApiSettings 
+                    <ApiSettings
                       showSettings={true}
                       toggleSettings={() => {}} // 这里已经控制显示了，所以传入空函数
                       apiProvider={apiProvider}
                       setApiProvider={(provider) => {
+                        const previousProvider = apiProvider;
                         setApiProvider(provider);
                         // 当更改提供商时，直接更新URL（使用预定义的默认值）
                         if (provider === 'openai') {
-                          setLlmApiUrl('https://api.openai.com/v1/chat/completions');
+                          setLlmApiUrl(API_URLS.openai);
                           setModel('gpt-4');
+                        } else if (provider === 'openai-compatible') {
+                          setLlmApiUrl(API_URLS['openai-compatible']);
+                          setModel('gpt-4o-mini');
                         } else if (provider === 'grok') {
                           setLlmApiUrl('https://api.grok.ai/v1/chat/completions');
                           setModel('grok-3-latest');
@@ -351,6 +432,15 @@ export default function WritingAssistant() {
                         } else if (provider === 'deepseek') {
                           setLlmApiUrl('https://api.deepseek.com/v1/chat/completions');
                           setModel('deepseek-chat');
+                        } else if (provider === 'gemini-vertex') {
+                          streamingPreferenceRef.current = useStreaming;
+                          setUseStreaming(false);
+                          setLlmApiUrl(API_URLS['gemini-vertex']);
+                          setModel('gemini-1.5-pro');
+                          setGeminiProjectId('');
+                        }
+                        if (previousProvider === 'gemini-vertex' && provider !== 'gemini-vertex') {
+                          setUseStreaming(streamingPreferenceRef.current);
                         }
                         // 重置错误
                         setError(null);
@@ -364,6 +454,9 @@ export default function WritingAssistant() {
                       setModel={setModel}
                       availableModels={availableModels}
                       fetchModels={fetchOllamaModels}
+                      providerOptions={['openai', 'openai-compatible', 'grok', 'ollama', 'deepseek', 'gemini-vertex', 'custom']}
+                      geminiProjectId={geminiProjectId}
+                      setGeminiProjectId={setGeminiProjectId}
                     />
                   )}
                 </div>
@@ -496,16 +589,16 @@ export default function WritingAssistant() {
                     </svg>
                     生成结果
                   </h2>
-                  
+
                   {/* 流式模式切换 */}
                   <div className="ml-6 flex items-center">
                     <label className="flex items-center text-sm text-gray-600 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={useStreaming}
-                        onChange={(e) => setUseStreaming(e.target.checked)}
+                        checked={apiProvider === 'gemini-vertex' ? false : useStreaming}
+                        onChange={(e) => handleStreamingToggle(e.target.checked)}
                         className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        disabled={isLoading}
+                        disabled={isLoading || apiProvider === 'gemini-vertex'}
                       />
                       <span className="flex items-center">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -514,10 +607,13 @@ export default function WritingAssistant() {
                         流式输出
                       </span>
                     </label>
+                    {apiProvider === 'gemini-vertex' && (
+                      <span className="ml-3 text-xs text-blue-500">Gemini Vertex 暂不支持流式输出</span>
+                    )}
                   </div>
                 </div>
-                
-                {output && isComplete && (
+
+                {articleContent && isComplete && (
                   <button
                     onClick={handleExport}
                     className="bg-green-600 hover:bg-green-700 text-white py-1.5 px-4 rounded-md text-sm flex items-center transition duration-150 ease-in-out shadow-sm"
@@ -529,18 +625,25 @@ export default function WritingAssistant() {
                   </button>
                 )}
               </div>
-              
-              <div className="flex-grow">
-                <StreamingContent
-                  content={output}
-                  isStreaming={isStreaming && isLoading}
-                  isComplete={isComplete}
-                  error={error || undefined}
-                  className="h-full"
+
+              <div className="flex-grow flex flex-col space-y-4">
+                <MarkdownEditor
+                  initialContent={articleContent}
+                  onContentChange={setArticleContent}
                 />
-                
+
+                {(isStreaming || currentGeneration || error) && (
+                  <StreamingContent
+                    content={currentGeneration}
+                    isStreaming={isStreaming && isLoading}
+                    isComplete={!isStreaming && currentGeneration.length === 0}
+                    error={error || undefined}
+                    className="mt-2 h-auto"
+                  />
+                )}
+
                 {error && apiResponseDetails && (
-                  <div className="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-md border border-yellow-200 text-sm">
+                  <div className="bg-yellow-50 text-yellow-800 p-3 rounded-md border border-yellow-200 text-sm">
                     <div className="font-medium mb-1">建议:</div>
                     {apiResponseDetails}
                   </div>

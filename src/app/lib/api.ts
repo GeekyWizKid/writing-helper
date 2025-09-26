@@ -9,16 +9,24 @@ export async function generateContentStream(
   onChunk: StreamCallback
 ): Promise<void> {
   try {
-    const { promptStyle, topic, keywords, wordCount, llmApiUrl, llmApiKey, model } = request;
-    
+    const { promptStyle, topic, keywords, wordCount, llmApiUrl, llmApiKey, model, apiProvider, additionalHeaders } = request;
+
     // Format the prompt template
     const promptTemplate = formatPromptTemplate(promptStyle, topic, keywords, wordCount);
-    
-    // Detect API provider type from URL
-    const isGrokApi = llmApiUrl.includes('grok') || llmApiUrl.includes('xai');
-    const isOllamaApi = llmApiUrl.includes('ollama') || llmApiUrl.includes('11434');
-    const isDeepSeekApi = llmApiUrl.includes('deepseek');
-    
+
+    const provider = apiProvider || '';
+
+    // Detect API provider type from URL or provided value
+    const isGrokApi = provider === 'grok' || llmApiUrl.includes('grok') || llmApiUrl.includes('xai');
+    const isOllamaApi = provider === 'ollama' || llmApiUrl.includes('ollama') || llmApiUrl.includes('11434');
+    const isDeepSeekApi = provider === 'deepseek' || llmApiUrl.includes('deepseek');
+    const isGeminiVertexApi = provider === 'gemini-vertex' || llmApiUrl.includes('aiplatform.googleapis.com');
+
+    if (isGeminiVertexApi) {
+      onChunk('', false, 'Google Gemini (Vertex) 暂不支持流式输出，请关闭流式模式。');
+      return;
+    }
+
     // Prepare request body based on API provider
     let requestBody: Record<string, unknown>;
     let isOllama = false;
@@ -53,10 +61,13 @@ export async function generateContentStream(
       };
     }
     
+    const extraHeaders = additionalHeaders || {};
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...extraHeaders
     };
-    
+
     if (!isOllamaApi && llmApiKey) {
       headers['Authorization'] = `Bearer ${llmApiKey}`;
     }
@@ -142,23 +153,26 @@ export async function generateContentStream(
 
 export async function generateContent(request: WritingRequest): Promise<ApiResponse> {
   try {
-    const { promptStyle, topic, keywords, wordCount, llmApiUrl, llmApiKey, model } = request;
-    
+    const { promptStyle, topic, keywords, wordCount, llmApiUrl, llmApiKey, model, apiProvider, additionalHeaders } = request;
+
     // Format the prompt template
     const promptTemplate = formatPromptTemplate(promptStyle, topic, keywords, wordCount);
-    
+
+    const provider = apiProvider || '';
+
     // Detect API provider type from URL (simple detection)
-    const isGrokApi = llmApiUrl.includes('grok') || llmApiUrl.includes('xai');
-    const isOllamaApi = llmApiUrl.includes('ollama') || llmApiUrl.includes('11434');
-    const isDeepSeekApi = llmApiUrl.includes('deepseek');
-    
+    const isGrokApi = provider === 'grok' || llmApiUrl.includes('grok') || llmApiUrl.includes('xai');
+    const isOllamaApi = provider === 'ollama' || llmApiUrl.includes('ollama') || llmApiUrl.includes('11434');
+    const isDeepSeekApi = provider === 'deepseek' || llmApiUrl.includes('deepseek');
+    const isGeminiVertexApi = provider === 'gemini-vertex' || llmApiUrl.includes('aiplatform.googleapis.com');
+
     // URL 由前端组件和代理处理，这里直接使用
     const apiUrl = llmApiUrl;
-    
+
     // Prepare request body based on API provider
     let requestBody: Record<string, unknown>;
     let isOllama = false;
-    
+
     if (isOllamaApi) {
       // Ollama API format
       requestBody = {
@@ -194,6 +208,22 @@ export async function generateContent(request: WritingRequest): Promise<ApiRespo
         temperature: 0.7,
         stream: false
       };
+    } else if (isGeminiVertexApi) {
+      requestBody = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: promptTemplate
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7
+        }
+      };
     } else {
       // OpenAI-compatible API format (default)
       requestBody = {
@@ -209,10 +239,13 @@ export async function generateContent(request: WritingRequest): Promise<ApiRespo
     }
     
     // Prepare headers based on API provider
+    const extraHeaders = additionalHeaders || {};
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...extraHeaders
     };
-    
+
     // Add appropriate authorization header if not Ollama
     if (!isOllamaApi) {
       headers['Authorization'] = `Bearer ${llmApiKey}`;
@@ -252,7 +285,25 @@ export async function generateContent(request: WritingRequest): Promise<ApiRespo
       // 以与测试页面相同的方式尝试不同方法提取内容
       let content = '';
       
-      if (data.choices && data.choices.length > 0 && data.choices[0].message && data.choices[0].message.content) {
+      if (isGeminiVertexApi && Array.isArray(data.candidates) && data.candidates.length > 0) {
+        const candidate = data.candidates[0];
+        if (candidate?.content?.parts) {
+          const parts = candidate.content.parts
+            .map((part: { text?: string }) => part?.text || '')
+            .filter((partText: string) => partText);
+          content = parts.join('');
+          console.log('从 Gemini Vertex candidates.content.parts 提取内容');
+        } else if (typeof candidate?.content === 'string') {
+          content = candidate.content;
+          console.log('从 Gemini Vertex candidates.content 提取内容');
+        } else if (candidate?.output) {
+          const outputParts = Array.isArray(candidate.output)
+            ? candidate.output
+            : [candidate.output];
+          content = outputParts.join('\n');
+          console.log('从 Gemini Vertex candidates.output 提取内容');
+        }
+      } else if (data.choices && data.choices.length > 0 && data.choices[0].message && data.choices[0].message.content) {
         // 标准格式
         content = data.choices[0].message.content;
         console.log('从 choices[0].message.content 提取内容');
