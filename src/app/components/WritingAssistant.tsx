@@ -63,6 +63,7 @@ const API_URLS: Record<ApiProvider, string> = {
   grok: 'https://api.grok.ai/v1/chat/completions',
   ollama: 'http://localhost:11434/api/generate',
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
+  cherry: 'http://127.0.0.1:23333/v1/chat/completions',
   custom: ''
 };
 
@@ -169,6 +170,76 @@ export default function WritingAssistant() {
       
       return []; // 返回空数组，避免后续处理出错
     }
+  };
+
+  // 获取可用的 Cherry Server 模型
+  const fetchCherryModels = async () => {
+    try {
+      setError(null);
+      if (!llmApiKey) {
+        setError('Cherry Server 需要 API 密钥以获取模型列表');
+        return [] as string[];
+      }
+
+      console.log('开始获取 Cherry Server 模型列表...');
+      const response = await fetch('/api/proxy/cherry-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          apiKey: llmApiKey
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`获取 Cherry 模型列表失败: ${response.status} ${response.statusText}`, errorText);
+        throw new Error(`无法获取模型列表: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      let modelsList: string[] = [];
+      if (data.models && Array.isArray(data.models)) {
+        modelsList = data.models.filter((m: unknown) => typeof m === 'string') as string[];
+      } else if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown[] }).data)) {
+        const list = ((data as { data?: unknown[] }).data || []) as unknown[];
+        modelsList = list.map((item) => {
+          const obj = item as Record<string, unknown>;
+          return typeof obj?.id === 'string' ? (obj.id as string) : '';
+        }).filter(Boolean);
+      }
+
+      if (modelsList.length > 0) {
+        setAvailableModels([]);
+        setTimeout(() => {
+          setAvailableModels(modelsList);
+          if (!modelsList.includes(model)) {
+            setModel(modelsList[0]);
+          }
+        }, 10);
+        console.log(`成功获取到 ${modelsList.length} 个 Cherry 模型`);
+      } else {
+        console.warn('未找到 Cherry 模型列表');
+        setAvailableModels([]);
+      }
+      return modelsList;
+    } catch (error) {
+      console.error('获取 Cherry 模型列表失败:', error);
+      setAvailableModels([]);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setError('获取模型列表超时，请检查 Cherry Server 是否响应');
+      } else {
+        setError('无法获取 Cherry Server 模型列表，请确保服务已启动并填入有效 API Key');
+      }
+      return [];
+    }
+  };
+
+  const fetchAvailableModels = async () => {
+    if (apiProvider === 'ollama') return fetchOllamaModels();
+    if (apiProvider === 'cherry') return fetchCherryModels();
+    return [] as string[];
   };
 
   const handleKeywordsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -351,6 +422,9 @@ export default function WritingAssistant() {
                         } else if (provider === 'deepseek') {
                           setLlmApiUrl('https://api.deepseek.com/v1/chat/completions');
                           setModel('deepseek-chat');
+                        } else if (provider === 'cherry') {
+                          setLlmApiUrl('http://127.0.0.1:23333/v1/chat/completions');
+                          setModel('openai:gpt-4o-mini');
                         }
                         // 重置错误
                         setError(null);
@@ -363,7 +437,7 @@ export default function WritingAssistant() {
                       model={model}
                       setModel={setModel}
                       availableModels={availableModels}
-                      fetchModels={fetchOllamaModels}
+                      fetchModels={fetchAvailableModels}
                     />
                   )}
                 </div>

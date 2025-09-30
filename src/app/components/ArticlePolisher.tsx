@@ -88,6 +88,63 @@ export default function ArticlePolisher() {
     }
   };
 
+  // 获取 Cherry Server 模型列表
+  const fetchCherryModels = async () => {
+    try {
+      setError(null);
+      if (!apiKey) {
+        setError('Cherry Server 需要 API 密钥以获取模型列表');
+        return [] as string[];
+      }
+      const response = await fetch('/api/proxy/cherry-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          apiKey
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`获取 Cherry 模型列表失败: ${response.status} ${response.statusText}`, errorText);
+        throw new Error(`无法获取模型列表: ${response.status} ${response.statusText}`);
+      }
+      const data = await response.json();
+      let modelsList: string[] = [];
+      if (data.models && Array.isArray(data.models)) {
+        modelsList = data.models.filter((m: unknown) => typeof m === 'string') as string[];
+      } else if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown[] }).data)) {
+        const list = ((data as { data?: unknown[] }).data || []) as unknown[];
+        modelsList = list.map((item) => {
+          const obj = item as Record<string, unknown>;
+          return typeof obj?.id === 'string' ? (obj.id as string) : '';
+        }).filter(Boolean);
+      }
+      if (modelsList.length > 0) {
+        setAvailableModels(modelsList);
+        if (!modelsList.includes(ollamaModel)) {
+          // 这里沿用同一模型状态变量用于 UI 绑定
+          setOllamaModel(modelsList[0]);
+        }
+      } else {
+        setAvailableModels([]);
+      }
+      return modelsList;
+    } catch (error) {
+      console.error('获取 Cherry 模型列表失败:', error);
+      setAvailableModels([]);
+      setError('无法获取 Cherry Server 模型列表，请确保服务已启动并填入有效 API Key');
+      return [] as string[];
+    }
+  };
+
+  const fetchAvailableModels = async () => {
+    if (apiProvider === 'ollama') return fetchOllamaModels();
+    if (apiProvider === 'cherry') return fetchCherryModels();
+    return [] as string[];
+  };
+
   // 当选择 Ollama 时自动设置相关参数
   useEffect(() => {
     setIsOllama(apiProvider === 'ollama');
@@ -187,6 +244,8 @@ export default function ArticlePolisher() {
                     setOllamaEndpoint('http://localhost:11434/api/generate');  // 确保使用 /api/generate 端点
                   } else if (provider === 'deepseek') {
                     setApiEndpoint('https://api.deepseek.com/v1/chat/completions');
+                  } else if (provider === 'cherry') {
+                    setApiEndpoint('http://127.0.0.1:23333/v1/chat/completions');
                   }
                   // 自定义提供商不更改URL
                 }}
@@ -200,7 +259,7 @@ export default function ArticlePolisher() {
                 }}
                 apiKey={apiKey}
                 setApiKey={setApiKey}
-                model={apiProvider === 'ollama' ? ollamaModel : apiProvider === 'openai' ? 'gpt-4' : apiProvider === 'grok' ? 'grok-3-latest' : apiProvider === 'deepseek' ? 'deepseek-chat' : ''}
+                model={apiProvider === 'ollama' ? ollamaModel : apiProvider === 'openai' ? 'gpt-4' : apiProvider === 'grok' ? 'grok-3-latest' : apiProvider === 'deepseek' ? 'deepseek-chat' : apiProvider === 'cherry' ? 'openai:gpt-4o-mini' : ''}
                 setModel={(model) => {
                   if (apiProvider === 'ollama') {
                     setOllamaModel(model);
@@ -208,7 +267,7 @@ export default function ArticlePolisher() {
                   // 其他模型名称暂不需要保存
                 }}
                 availableModels={availableModels}
-                fetchModels={fetchOllamaModels}
+                fetchModels={fetchAvailableModels}
               />
 
               {/* 润色类型设置 */}

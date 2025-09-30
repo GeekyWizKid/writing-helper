@@ -1,0 +1,5 @@
+{
+  "name": "writing-helper",
+  "version": "1.0.0",
+  "entry": "dist/index.js"
+}

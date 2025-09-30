@@ -332,6 +332,50 @@ export default function WechatFormatter() {
       return [];
     }
   };
+
+  // 获取 Cherry Server 模型列表
+  const fetchCherryModels = async (): Promise<string[] | void> => {
+    if (apiProvider !== 'cherry') return;
+    if (!apiKey) {
+      setStyleError('Cherry Server 需要 API 密钥以获取模型列表');
+      return [];
+    }
+    try {
+      const response = await fetch('/api/proxy/cherry-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          apiKey
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`获取模型失败: ${response.status}`);
+      }
+      const data = await response.json();
+      let modelNames: string[] = [];
+      if (data.models && Array.isArray(data.models)) {
+        modelNames = data.models.filter((s: unknown) => typeof s === 'string') as string[];
+      } else if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown[] }).data)) {
+        const list = ((data as { data?: unknown[] }).data || []) as unknown[];
+        modelNames = list.map((item) => {
+          const obj = item as Record<string, unknown>;
+          return typeof obj?.id === 'string' ? (obj.id as string) : '';
+        }).filter(Boolean);
+      }
+      setAvailableModels(modelNames);
+      return modelNames;
+    } catch (error) {
+      console.error('获取 Cherry 模型错误:', error);
+      return [];
+    }
+  };
+
+  const fetchAvailableModels = async () => {
+    if (apiProvider === 'ollama') return fetchOllamaModels();
+    if (apiProvider === 'cherry') return fetchCherryModels();
+    return [] as string[];
+  };
   
   // 使用 AI 生成 CSS 样式
   const generateAIStyle = async () => {
@@ -1147,6 +1191,9 @@ export default function WechatFormatter() {
                     } else if (provider === 'deepseek') {
                       setApiUrl('https://api.deepseek.com/v1/chat/completions');
                       setModel('deepseek-chat');
+                    } else if (provider === 'cherry') {
+                      setApiUrl('http://127.0.0.1:23333/v1/chat/completions');
+                      setModel('openai:gpt-4o-mini');
                     }
                     setStyleError(null);
                   }}
@@ -1157,7 +1204,7 @@ export default function WechatFormatter() {
                   model={model}
                   setModel={setModel}
                   availableModels={availableModels}
-                  fetchModels={fetchOllamaModels}
+                  fetchModels={fetchAvailableModels}
                 />
               </div>
             )}

@@ -75,14 +75,9 @@ export async function POST(request: NextRequest) {
         requestUrl = `${baseUrl}/api/generate`;
       }
       
-      // 确保使用 IPv4 地址
-      if (requestUrl.includes('localhost')) {
-        requestUrl = requestUrl.replace('localhost', '127.0.0.1');
-      }
-      
       console.log('最终请求 URL:', requestUrl);
       
-      const response = await fetch(requestUrl, {
+      const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -90,7 +85,31 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify(requestBody),
         signal: controller.signal,
-      });
+      };
+
+      // 优先尝试原始 URL，如果失败且包含 localhost，则回退尝试 127.0.0.1 与 ::1
+      let response: Response;
+      try {
+        response = await fetch(requestUrl, fetchOptions);
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.warn('初次 fetch 失败，准备回退:', errMsg);
+        if (requestUrl.includes('localhost')) {
+          const altIpv4 = requestUrl.replace('localhost', '127.0.0.1');
+          try {
+            console.log('尝试 IPv4 回退 URL:', altIpv4);
+            response = await fetch(altIpv4, fetchOptions);
+            requestUrl = altIpv4;
+          } catch (e2) {
+            const altIpv6 = requestUrl.replace('http://localhost', 'http://[::1]').replace('https://localhost', 'https://[::1]');
+            console.log('尝试 IPv6 回退 URL:', altIpv6);
+            response = await fetch(altIpv6, fetchOptions);
+            requestUrl = altIpv6;
+          }
+        } else {
+          throw e;
+        }
+      }
 
       clearTimeout(timeoutId);
 
