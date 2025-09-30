@@ -8,7 +8,8 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "package:cherry": "node scripts/package-cherry.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^1.5.0",

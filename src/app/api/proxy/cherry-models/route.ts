@@ -16,7 +16,7 @@ export async function OPTIONS() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const serverUrl = (body?.serverUrl as string) || 'http://127.0.0.1:23333/v1/models';
+    const serverUrl = (body?.serverUrl as string) || 'http://localhost:23333/v1/models';
     const apiKey = (body?.apiKey as string) || '';
 
     if (!serverUrl || !serverUrl.startsWith('http')) {

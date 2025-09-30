@@ -21,7 +21,7 @@ const API_URLS: Record<ApiProvider, string> = {
   grok: 'https://api.x.ai/v1/chat/completions',
   ollama: 'http://localhost:11434/api/generate',  // 确保使用 /api/generate 端点
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
-  cherry: 'http://127.0.0.1:23333/v1/chat/completions',
+  cherry: 'http://localhost:23333/v1/chat/completions',
   custom: ''
 };
 

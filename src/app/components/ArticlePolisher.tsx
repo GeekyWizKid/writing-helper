@@ -100,7 +100,7 @@ export default function ArticlePolisher() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          serverUrl: 'http://localhost:23333/v1/models',
           apiKey
         }),
         signal: AbortSignal.timeout(5000)
@@ -245,7 +245,7 @@ export default function ArticlePolisher() {
                   } else if (provider === 'deepseek') {
                     setApiEndpoint('https://api.deepseek.com/v1/chat/completions');
                   } else if (provider === 'cherry') {
-                    setApiEndpoint('http://127.0.0.1:23333/v1/chat/completions');
+                    setApiEndpoint('http://localhost:23333/v1/chat/completions');
                   }
                   // 自定义提供商不更改URL
                 }}

@@ -63,7 +63,7 @@ const API_URLS: Record<ApiProvider, string> = {
   grok: 'https://api.grok.ai/v1/chat/completions',
   ollama: 'http://localhost:11434/api/generate',
   deepseek: 'https://api.deepseek.com/v1/chat/completions',
-  cherry: 'http://127.0.0.1:23333/v1/chat/completions',
+  cherry: 'http://localhost:23333/v1/chat/completions',
   custom: ''
 };
 
@@ -186,7 +186,7 @@ export default function WritingAssistant() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          serverUrl: 'http://localhost:23333/v1/models',
           apiKey: llmApiKey
         }),
         signal: AbortSignal.timeout(5000)
@@ -423,7 +423,7 @@ export default function WritingAssistant() {
                           setLlmApiUrl('https://api.deepseek.com/v1/chat/completions');
                           setModel('deepseek-chat');
                         } else if (provider === 'cherry') {
-                          setLlmApiUrl('http://127.0.0.1:23333/v1/chat/completions');
+                          setLlmApiUrl('http://localhost:23333/v1/chat/completions');
                           setModel('openai:gpt-4o-mini');
                         }
                         // 重置错误

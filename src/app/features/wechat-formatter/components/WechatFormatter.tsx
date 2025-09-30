@@ -345,7 +345,7 @@ export default function WechatFormatter() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          serverUrl: 'http://127.0.0.1:23333/v1/models',
+          serverUrl: 'http://localhost:23333/v1/models',
           apiKey
         }),
       });
@@ -1192,7 +1192,7 @@ export default function WechatFormatter() {
                       setApiUrl('https://api.deepseek.com/v1/chat/completions');
                       setModel('deepseek-chat');
                     } else if (provider === 'cherry') {
-                      setApiUrl('http://127.0.0.1:23333/v1/chat/completions');
+                      setApiUrl('http://localhost:23333/v1/chat/completions');
                       setModel('openai:gpt-4o-mini');
                     }
                     setStyleError(null);
