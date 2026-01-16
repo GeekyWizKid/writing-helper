@@ -172,6 +172,7 @@ export default function ApiSettings({
             </label>
             <select
               id="apiProvider"
+              name="api-provider"
               value={apiProvider}
               onChange={handleApiProviderChange}
               className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
@@ -193,12 +194,14 @@ export default function ApiSettings({
               API 地址
             </label>
             <input
-              type="text"
+              type="url"
               id="apiUrl"
+              name="api-url"
               value={apiUrl}
               onChange={(e) => setApiUrl(e.target.value)}
               className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               placeholder="API 端点 URL"
+              autoComplete="url"
             />
           </div>
 
@@ -247,19 +250,22 @@ export default function ApiSettings({
                   <input
                     type="password"
                     id="apiKey"
+                    name="api-key"
                     value={apiKey}
                     onChange={handleApiKeyChange}
                     className="block w-full px-3 py-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                     placeholder="输入您的 API 密钥"
+                    autoComplete="off"
                   />
                   {apiKey && (
                     <button
                       type="button"
                       onClick={clearStoredKey}
                       className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                      aria-label="清除保存的密钥"
                       title="清除保存的密钥"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
                     </button>
@@ -298,6 +304,7 @@ export default function ApiSettings({
               <div className="space-y-2">
                 <select
                   id="model"
+                  name="model"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
@@ -315,10 +322,11 @@ export default function ApiSettings({
                 <input
                   type="text"
                   id="model"
+                  name="model"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                  placeholder={(apiProvider === 'ollama' || apiProvider === 'cherry') ? '加载模型列表中或手动输入模型名称...' : '输入模型名称'}
+                  placeholder={(apiProvider === 'ollama' || apiProvider === 'cherry') ? '加载模型列表中或手动输入模型名称…' : '输入模型名称'}
                 />
                 {apiProvider === 'ollama' && (
                   <div className="text-xs text-gray-500">
@@ -361,8 +369,9 @@ export default function ApiSettings({
                   }
                 }}
                 className="mt-2 inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                aria-label="刷新模型列表"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
                 刷新模型列表

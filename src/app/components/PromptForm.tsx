@@ -117,16 +117,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
     <div className="bg-white p-6 rounded-lg shadow-md space-y-6">
       {/* Basic Information */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('basic');
           }}
+          aria-expanded={expandedSection === 'basic'}
+          aria-controls="basic-section"
         >
           <h3 className="text-lg font-semibold">基本信息</h3>
-          <span>{expandedSection === 'basic' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'basic' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'basic' && (
@@ -149,16 +151,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
       
       {/* Language Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('language');
           }}
+          aria-expanded={expandedSection === 'language'}
+          aria-controls="language-section"
         >
           <h3 className="text-lg font-semibold">语言风格</h3>
-          <span>{expandedSection === 'language' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'language' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'language' && (
@@ -182,6 +186,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('language', 'sentence_pattern', index)}
+                      aria-label={`删除句型模式: ${pattern || '空'}`}
                     >
                       ✕
                     </button>
@@ -237,6 +242,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                           type="button"
                           className="p-1 text-red-600 hover:text-red-800"
                           onClick={() => removeArrayItem('language', 'word_choice.preferred_words', index)}
+                          aria-label={`删除偏好词汇: ${word || '空'}`}
                         >
                           ✕
                         </button>
@@ -270,6 +276,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                           type="button"
                           className="p-1 text-red-600 hover:text-red-800"
                           onClick={() => removeArrayItem('language', 'word_choice.avoided_words', index)}
+                          aria-label={`删除避免词汇: ${word || '空'}`}
                         >
                           ✕
                         </button>
@@ -306,6 +313,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('language', 'rhetoric', index)}
+                      aria-label={`删除修辞手法: ${item || '空'}`}
                     >
                       ✕
                     </button>
@@ -326,16 +334,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Structure Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('structure');
           }}
+          aria-expanded={expandedSection === 'structure'}
+          aria-controls="structure-section"
         >
           <h3 className="text-lg font-semibold">结构</h3>
-          <span>{expandedSection === 'structure' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'structure' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'structure' && (
@@ -384,16 +394,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Narrative Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('narrative');
           }}
+          aria-expanded={expandedSection === 'narrative'}
+          aria-controls="narrative-section"
         >
           <h3 className="text-lg font-semibold">叙述</h3>
-          <span>{expandedSection === 'narrative' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'narrative' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'narrative' && (
@@ -442,16 +454,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Emotion Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('emotion');
           }}
+          aria-expanded={expandedSection === 'emotion'}
+          aria-controls="emotion-section"
         >
           <h3 className="text-lg font-semibold">情感</h3>
-          <span>{expandedSection === 'emotion' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'emotion' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'emotion' && (
@@ -502,16 +516,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Thinking Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('thinking');
           }}
+          aria-expanded={expandedSection === 'thinking'}
+          aria-controls="thinking-section"
         >
           <h3 className="text-lg font-semibold">思维</h3>
-          <span>{expandedSection === 'thinking' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'thinking' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'thinking' && (
@@ -562,16 +578,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Uniqueness Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('uniqueness');
           }}
+          aria-expanded={expandedSection === 'uniqueness'}
+          aria-controls="uniqueness-section"
         >
           <h3 className="text-lg font-semibold">独特性</h3>
-          <span>{expandedSection === 'uniqueness' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'uniqueness' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'uniqueness' && (
@@ -594,6 +612,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('uniqueness', 'signature_phrases', index)}
+                      aria-label={`删除标志性短语: ${phrase || '空'}`}
                     >
                       ✕
                     </button>
@@ -627,6 +646,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('uniqueness', 'imagery_system', index)}
+                      aria-label={`删除意象: ${image || '空'}`}
                     >
                       ✕
                     </button>
@@ -647,16 +667,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Cultural Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('cultural');
           }}
+          aria-expanded={expandedSection === 'cultural'}
+          aria-controls="cultural-section"
         >
           <h3 className="text-lg font-semibold">文化</h3>
-          <span>{expandedSection === 'cultural' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'cultural' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'cultural' && (
@@ -679,6 +701,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('cultural', 'allusions', index)}
+                      aria-label={`删除典故: ${allusion || '空'}`}
                     >
                       ✕
                     </button>
@@ -712,6 +735,7 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
                       type="button"
                       className="p-1 text-red-600 hover:text-red-800"
                       onClick={() => removeArrayItem('cultural', 'knowledge_domains', index)}
+                      aria-label={`删除知识领域: ${domain || '空'}`}
                     >
                       ✕
                     </button>
@@ -732,16 +756,18 @@ export default function PromptForm({ initialStyle, onStyleChange }: PromptFormPr
 
       {/* Rhythm Section */}
       <div className="border border-gray-200 rounded-md overflow-hidden">
-        <button 
+        <button
           type="button"
-          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none"
+          className="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset transition-colors"
           onClick={(e) => {
             e.preventDefault();
             toggleSection('rhythm');
           }}
+          aria-expanded={expandedSection === 'rhythm'}
+          aria-controls="rhythm-section"
         >
           <h3 className="text-lg font-semibold">节奏</h3>
-          <span>{expandedSection === 'rhythm' ? '▼' : '▶'}</span>
+          <span aria-hidden="true">{expandedSection === 'rhythm' ? '▼' : '▶'}</span>
         </button>
         
         {expandedSection === 'rhythm' && (

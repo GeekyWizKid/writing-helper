@@ -27,6 +27,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh">
+      <head>
+        {/* Preconnect to external API endpoints for faster connections */}
+        <link rel="preconnect" href="https://api.openai.com" />
+        <link rel="preconnect" href="https://api.x.ai" />
+        <link rel="preconnect" href="https://api.deepseek.com" />
+        <link rel="dns-prefetch" href="https://api.openai.com" />
+        <link rel="dns-prefetch" href="https://api.x.ai" />
+        <link rel="dns-prefetch" href="https://api.deepseek.com" />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased flex flex-col min-h-screen`}>
         <Script id="cherry-studio-detection" strategy="afterInteractive">
           {`
