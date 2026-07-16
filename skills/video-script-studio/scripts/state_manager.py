@@ -499,7 +499,10 @@ def _verify_empty_tombstone_at(parent_fd: int, name: str) -> None:
         opened = os.fstat(descriptor)
         linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (
-            (opened.st_dev, opened.st_ino) != identity
+            not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) & 0o022
+            or (opened.st_dev, opened.st_ino) != identity
             or stat.S_ISLNK(linked.st_mode)
             or (linked.st_dev, linked.st_ino) != identity
             or os.listdir(descriptor)
@@ -774,7 +777,11 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                 continue
             quarantine_identity = _snapshot_identity_at(history_fd, name)
             if quarantine_identity != expected_identity:
-                raise StudioError("A competing transaction quarantine was found.")
+                # Strict empty tombstones from earlier transactions are a
+                # normal bounded residue.  They are never deleted, but must
+                # remain inode-bound, safe, and empty before being ignored.
+                _verify_empty_tombstone_at(history_fd, name)
+                continue
             if target_committed:
                 if _snapshot_identity_at(history_fd, snapshot_name) is not None:
                     raise StudioError("Committed history has an unexpected quarantine.")

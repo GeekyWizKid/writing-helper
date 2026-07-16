@@ -503,6 +503,10 @@ class StateManagerTests(unittest.TestCase):
         empty.mkdir()
         self.module.status(self.project)
         self.assertTrue(empty.is_dir())
+        empty.chmod(0o777)
+        with self.assertRaises(self.module.StudioError):
+            self.module.status(self.project)
+        empty.chmod(0o700)
 
         nonempty = history / (".reopen-delete-" + "b" * 32)
         nonempty.mkdir()
@@ -511,6 +515,51 @@ class StateManagerTests(unittest.TestCase):
         with self.assertRaises(self.module.StudioError):
             self.module.status(self.project)
         self.assertEqual("keep", marker.read_text(encoding="utf-8"))
+
+    def test_old_empty_tombstone_does_not_block_new_journal_recovery(self) -> None:
+        for boundary in ("snapshot-published", "state-committed"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                result = self.initializer.init_project(
+                    Path(directory), "Old Tombstone", "short-form", date="2026-07-17"
+                )
+                project = Path(result["path"])
+                history = project / "history"
+                old_tombstone = history / (".reopen-delete-" + "c" * 32)
+                old_tombstone.mkdir()
+                self.module.approve(project, "brief")
+                real_recover = self.module._recover_transaction_at
+
+                def interrupt(name):
+                    if name == boundary:
+                        raise KeyboardInterrupt(name)
+
+                def persist_journal(project_fd, *, scan_orphans=False):
+                    if scan_orphans and (project / self.module.JOURNAL_NAME).exists():
+                        raise self.module.StudioError("persist for next operation")
+                    return real_recover(project_fd, scan_orphans=scan_orphans)
+
+                with (
+                    mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt),
+                    mock.patch.object(
+                        self.module, "_recover_transaction_at", side_effect=persist_journal
+                    ),
+                ):
+                    with self.assertRaises(self.module.StudioError):
+                        self.module.reopen(project, "brief", reason="rewrite")
+                self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
+
+                state = self.module.status(project)
+                self.assertTrue(old_tombstone.is_dir())
+                self.assertEqual([], list(old_tombstone.iterdir()))
+                self.assertFalse((project / self.module.JOURNAL_NAME).exists())
+                public = self.public_history(project)
+                if boundary == "state-committed":
+                    self.assertEqual("brief_pending", state["stage"])
+                    self.assertEqual(1, len(public))
+                else:
+                    self.assertEqual("research_pending", state["stage"])
+                    self.assertEqual([], public)
+                self.assert_hidden_history_is_safe_tombstones(project)
 
     def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
         stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")
