@@ -15,6 +15,7 @@ artifacts:
   script: "script.md"
   sources: "sources.md"
   storyboard: "storyboard.md"
+completion_digest: null
 research:
   disposition: "undecided"
 schema_version: "1"

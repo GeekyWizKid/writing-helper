@@ -251,6 +251,7 @@ class InitProjectTests(unittest.TestCase):
 
             state = self.common.load_state_yaml(project / "project.yaml")
             self.assertEqual("brief_pending", state["stage"])
+            self.assertIsNone(state["completion_digest"])
             self.assertEqual(ARTIFACTS, state["artifacts"])
             self.assertEqual(
                 {

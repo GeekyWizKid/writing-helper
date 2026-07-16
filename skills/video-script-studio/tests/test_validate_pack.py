@@ -508,10 +508,34 @@ class ValidatePackTests(unittest.TestCase):
         result = self.state.complete(self.project)
         self.assertEqual("completed", result["status"])
         self.assertEqual("complete", self.state.status(self.project)["stage"])
+        completed_state = self.state.load_state(self.project)
+        self.assertRegex(completed_state["completion_digest"], r"^[0-9a-f]{64}$")
+        self.assertTrue(self.validator.validate_pack(self.project)["valid"])
         self.assertEqual("already_complete", self.state.complete(self.project)["status"])
         self.state.reopen(self.project, "script", "完成后发现问题")
         self.assertEqual("script_pending", self.state.status(self.project)["stage"])
+        self.assertIsNone(self.state.load_state(self.project)["completion_digest"])
         self.assertNotEqual(before, (self.project / "project.yaml").read_bytes())
+
+    def test_completed_pack_detects_later_artifact_edit_by_semantic_digest(self) -> None:
+        self.state.complete(self.project)
+        self.write("publish.md", "# Publish\n\n完成后被修改的有效内容。\n")
+        result = self.validator.validate_pack(self.project)
+        self.assertFalse(result["valid"])
+        self.assertIn("completion_digest_mismatch", result["error_codes"])
+        completion = self.state.complete(self.project)
+        self.assertEqual("blocked", completion["status"])
+        self.assertIn(
+            "completion_digest_mismatch", completion["validation"]["error_codes"]
+        )
+
+    def test_missing_ordinary_artifact_blocks_completion_without_raising(self) -> None:
+        (self.project / "assets.md").unlink()
+        before = (self.project / "project.yaml").read_bytes()
+        result = self.state.complete(self.project)
+        self.assertEqual("blocked", result["status"])
+        self.assertIn("missing_file", result["validation"]["error_codes"])
+        self.assertEqual(before, (self.project / "project.yaml").read_bytes())
 
     def test_concurrent_completion_serializes_to_one_transition(self) -> None:
         with ThreadPoolExecutor(max_workers=8) as executor:
@@ -572,8 +596,7 @@ class ValidatePackTests(unittest.TestCase):
         self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
         self.assertEqual(before, (self.project / "project.yaml").read_bytes())
 
-    def test_completion_baseline_precedes_state_load_and_validation_reads(self) -> None:
-        before = (self.project / "project.yaml").read_bytes()
+    def test_completion_accepts_content_stable_from_validation_onward(self) -> None:
         real_load = self.state._load_state_with_size_at
 
         def mutate_during_state_load(project_fd: int):
@@ -585,9 +608,7 @@ class ValidatePackTests(unittest.TestCase):
             self.state, "_load_state_with_size_at", side_effect=mutate_during_state_load
         ):
             result = self.state.complete(self.project)
-        self.assertEqual("blocked", result["status"])
-        self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
-        self.assertEqual(before, (self.project / "project.yaml").read_bytes())
+        self.assertEqual("completed", result["status"])
 
     def test_completion_rejects_aba_restore_of_prevalidation_invalid_content(self) -> None:
         invalid_a = "# Publish\n\nTODO\n"
@@ -621,6 +642,19 @@ class ValidatePackTests(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
         self.assertEqual(state_before, (self.project / "project.yaml").read_bytes())
+
+    def test_save_entry_mutation_cannot_publish_complete_state(self) -> None:
+        before = (self.project / "project.yaml").read_bytes()
+        real_save = self.state._save_state_at
+
+        def mutate_before_save(project_fd: int, state: dict, *args, **kwargs):
+            self.write("publish.md", "# Publish\n\n保存入口发生的合法内容替换。\n")
+            return real_save(project_fd, state, *args, **kwargs)
+
+        with mock.patch.object(self.state, "_save_state_at", side_effect=mutate_before_save):
+            with self.assertRaises(self.state.StudioError):
+                self.state.complete(self.project)
+        self.assertEqual(before, (self.project / "project.yaml").read_bytes())
 
     def test_failed_completion_does_not_change_published_state_bytes(self) -> None:
         self.write("publish.md", "# Publish\n\nTBD\n")

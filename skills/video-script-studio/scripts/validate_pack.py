@@ -123,6 +123,7 @@ _MESSAGES = {
     "review_base_gate_failed": "A mandatory base gate failed.",
     "review_not_passed": "The independent review is not marked passed.",
     "review_total_mismatch": "The review total does not match its weighted dimensions.",
+    "completion_digest_mismatch": "The completed production pack no longer matches its digest.",
     "invalid_history_entry": "History contains an unrecognized entry.",
     "invalid_history_snapshot": "A public history snapshot is invalid.",
 }
@@ -668,6 +669,33 @@ def _pack_fingerprint_at(project_fd: int) -> tuple[Any, ...]:
     return top_level, tuple(file_fingerprints), tuple(history_fingerprints)
 
 
+def _completion_digest_from_fingerprint(fingerprint: tuple[Any, ...]) -> str:
+    top_level, files, history = fingerprint
+    semantic_history: list[Any] = []
+    for entry in history:
+        if len(entry) >= 2 and entry[1] == "tombstone":
+            semantic_history.append((entry[0], "tombstone"))
+        else:
+            semantic_history.append((entry[0], entry[3]))
+    semantic = {
+        "topology": [
+            name
+            for name in top_level
+            if name not in {"project.yaml", ".video-script-studio-state.lock"}
+        ],
+        "artifacts": [(name, digest) for name, digest in files if name != "project.yaml"],
+        "history": semantic_history,
+    }
+    payload = json.dumps(
+        semantic,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _validate_pack_at(
     project_fd: int,
     *,
@@ -688,6 +716,8 @@ def _validate_pack_at(
     history_fingerprint = _validate_history_at(
         project_fd, problems, byte_budget=MAX_PACK_BYTES - pack_bytes
     )
+    read_fingerprint = (top_level, file_fingerprints, history_fingerprint)
+    semantic_digest = _completion_digest_from_fingerprint(read_fingerprint)
 
     parsed_state = state
     if parsed_state is None and "project.yaml" in files:
@@ -715,6 +745,12 @@ def _validate_pack_at(
     source_count, claim_count, warnings = _validate_sources(
         files.get("sources.md"), files.get("script.md", ""), problems
     )
+    if (
+        parsed_state is not None
+        and parsed_state.get("stage") == "complete"
+        and parsed_state.get("completion_digest") != semantic_digest
+    ):
+        problems.add("completion_digest_mismatch")
     result = {
         "valid": not problems.codes,
         "errors": problems.errors,
@@ -725,11 +761,7 @@ def _validate_pack_at(
         "claim_count": claim_count,
     }
     if capture_fingerprint:
-        return result, (
-            (top_level, file_fingerprints, history_fingerprint)
-            if result["valid"]
-            else None
-        )
+        return result, (read_fingerprint if result["valid"] else None), semantic_digest
     return result
 
 

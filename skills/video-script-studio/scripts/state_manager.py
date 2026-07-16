@@ -17,7 +17,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 try:
     import fcntl
@@ -45,7 +45,16 @@ MAX_REASON_CHARS = 4096
 
 _APPROVAL_VALUES = frozenset(("pending", "approved", "invalidated"))
 _ROOT_KEYS = frozenset(
-    ("approvals", "artifacts", "project", "research", "schema_version", "sources", "stage")
+    (
+        "approvals",
+        "artifacts",
+        "completion_digest",
+        "project",
+        "research",
+        "schema_version",
+        "sources",
+        "stage",
+    )
 )
 _ARTIFACTS = {
     "assets": "assets.md",
@@ -120,6 +129,14 @@ def _validate_state(state: Any) -> dict[str, Any]:
     expected_stage = _expected_stage(approvals)
     if state.get("stage") not in ({expected_stage, "complete"} if expected_stage == "script_approved" else {expected_stage}):
         raise StudioError("The project stage does not match its approvals.")
+    completion_digest = state.get("completion_digest")
+    if state.get("stage") == "complete":
+        if not isinstance(completion_digest, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", completion_digest
+        ):
+            raise StudioError("The completed project digest is invalid.")
+    elif completion_digest is not None:
+        raise StudioError("A non-complete project cannot have a completion digest.")
 
     if state.get("schema_version") != "1" or state.get("artifacts") != _ARTIFACTS:
         raise StudioError("The project state schema is invalid.")
@@ -278,7 +295,13 @@ def _write_all(descriptor: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _save_state_at(project_fd: int, state: dict[str, Any]) -> None:
+def _save_state_at(
+    project_fd: int,
+    state: dict[str, Any],
+    *,
+    expected_fingerprint: Any = None,
+    fingerprint_reader: Callable[[], Any] | None = None,
+) -> None:
     _validate_state(state)
     committed = False
     try:
@@ -287,6 +310,9 @@ def _save_state_at(project_fd: int, state: dict[str, Any]) -> None:
         raise StudioError("Could not serialize the project state.") from exc
     if len(payload) > MAX_STATE_BYTES:
         raise StudioError("The project state is too large.")
+    if expected_fingerprint is not None:
+        if fingerprint_reader is None or fingerprint_reader() != expected_fingerprint:
+            raise StudioError("The production pack changed before state publication.")
     temporary = f".project.yaml.{uuid.uuid4().hex}.tmp"
     descriptor: int | None = None
     try:
@@ -880,6 +906,7 @@ def _build_target_state(state: dict[str, Any], stage: str) -> dict[str, Any]:
     for later in STAGES[index + 1 :]:
         target["approvals"][later] = "invalidated"
     target["stage"] = f"{stage}_pending"
+    target["completion_digest"] = None
     return target
 
 
@@ -982,16 +1009,12 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
 def complete(project: Path) -> dict[str, Any]:
     """Atomically mark a fully approved, valid production pack complete."""
     with _locked_project(project) as (_, project_fd):
-        # Import lazily to keep module loading acyclic. The baseline is the
-        # first pack read after lock acquisition/recovery, before state or
-        # artifact validation can observe a different version.
+        # Import lazily to keep module loading acyclic.
         from validate_pack import _pack_fingerprint_at, _validate_pack_at
 
-        fingerprint = _pack_fingerprint_at(project_fd)
         state, state_byte_count, state_digest = _load_state_with_size_at(project_fd)
-        if state["stage"] == "complete":
-            return {"stage": "complete", "status": "already_complete"}
-        validation, validated_fingerprint = _validate_pack_at(
+        was_complete = state["stage"] == "complete"
+        validation, validated_fingerprint, completion_digest = _validate_pack_at(
             project_fd,
             state=state,
             state_byte_count=state_byte_count,
@@ -1004,17 +1027,17 @@ def complete(project: Path) -> dict[str, Any]:
                 "status": "blocked",
                 "validation": validation,
             }
+        if was_complete:
+            return {"stage": "complete", "status": "already_complete"}
         _completion_boundary("validated")
         target = copy.deepcopy(state)
         target["stage"] = "complete"
+        target["completion_digest"] = completion_digest
         # The lock is advisory. Cooperative writers serialize with us; this
         # last-moment fingerprint check also detects ordinary non-cooperative
         # changes in the validation-to-publication window.
         current_fingerprint = _pack_fingerprint_at(project_fd)
-        if (
-            fingerprint != current_fingerprint
-            or validated_fingerprint != current_fingerprint
-        ):
+        if validated_fingerprint != current_fingerprint:
             changed = copy.deepcopy(validation)
             changed["valid"] = False
             changed["error_codes"].append("pack_changed_during_completion")
@@ -1024,7 +1047,12 @@ def complete(project: Path) -> dict[str, Any]:
                 "status": "blocked",
                 "validation": changed,
             }
-        _save_state_at(project_fd, target)
+        _save_state_at(
+            project_fd,
+            target,
+            expected_fingerprint=validated_fingerprint,
+            fingerprint_reader=lambda: _pack_fingerprint_at(project_fd),
+        )
         return {"stage": "complete", "status": "completed", "validation": validation}
 
 

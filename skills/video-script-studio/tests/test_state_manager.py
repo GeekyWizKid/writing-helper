@@ -156,6 +156,22 @@ class StateManagerTests(unittest.TestCase):
         self.assertEqual(original, (self.project / "project.yaml").read_bytes())
         self.assertFalse(any(p.name.startswith(".project.yaml") for p in self.project.iterdir()))
 
+    def test_completion_digest_state_invariant_is_strict(self) -> None:
+        state = self.module.load_state(self.project)
+        state["completion_digest"] = "a" * 64
+        with self.assertRaises(self.module.StudioError):
+            self.module.save_state(self.project, state)
+
+        state["approvals"] = {stage: "approved" for stage in STAGES}
+        state["stage"] = "complete"
+        state["completion_digest"] = None
+        with self.assertRaises(self.module.StudioError):
+            self.module.save_state(self.project, state)
+
+        state["completion_digest"] = "A" * 64
+        with self.assertRaises(self.module.StudioError):
+            self.module.save_state(self.project, state)
+
     def test_reopen_rolls_back_snapshot_when_state_publication_fails(self) -> None:
         self.module.approve(self.project, "brief")
         history = self.project / "history"
