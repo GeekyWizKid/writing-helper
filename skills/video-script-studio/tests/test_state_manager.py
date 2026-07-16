@@ -388,9 +388,13 @@ class StateManagerTests(unittest.TestCase):
                 def swap_after_open(path, flags, *args, **kwargs):
                     nonlocal swapped, competitor_identity
                     descriptor = real_open(path, flags, *args, **kwargs)
-                    if path == target_name and not swapped:
+                    if (
+                        isinstance(path, str)
+                        and self.module._QUARANTINE_PATTERN.fullmatch(path)
+                        and not swapped
+                    ):
                         swapped = True
-                        target.rename(displaced)
+                        (history / path).rename(displaced)
                         target.mkdir()
                         metadata = target.stat()
                         competitor_identity = (metadata.st_dev, metadata.st_ino)
@@ -404,6 +408,76 @@ class StateManagerTests(unittest.TestCase):
                 metadata = target.stat()
                 self.assertEqual(competitor_identity, (metadata.st_dev, metadata.st_ino))
                 self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
+
+    def test_atomic_quarantine_never_rmdirs_a_swapped_public_competitor(self) -> None:
+        self.module.approve(self.project, "brief")
+        project = self.project
+        history = project / "history"
+        real_recover = self.module._recover_transaction_at
+
+        def interrupt(name):
+            if name == "snapshot-published":
+                raise KeyboardInterrupt(name)
+
+        def persist_transaction(project_fd, *, scan_orphans=False):
+            if scan_orphans and (project / self.module.JOURNAL_NAME).exists():
+                raise self.module.StudioError("leave transaction persisted")
+            return real_recover(project_fd, scan_orphans=scan_orphans)
+
+        with (
+            mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt),
+            mock.patch.object(
+                self.module, "_recover_transaction_at", side_effect=persist_transaction
+            ),
+        ):
+            with self.assertRaises(self.module.StudioError):
+                self.module.reopen(project, "brief", reason="rewrite")
+
+        journal = json.loads(
+            (project / self.module.JOURNAL_NAME).read_text(encoding="utf-8")
+        )
+        public_name = journal["snapshot_name"]
+        public = history / public_name
+        expected_identity = (journal["snapshot_dev"], journal["snapshot_ino"])
+        displaced = history / ".expected-displaced"
+        competitor_identity: tuple[int, int] | None = None
+        real_quarantine = self.module._native_rename_noreplace
+
+        def swap_during_quarantine(directory_fd, source, destination):
+            nonlocal competitor_identity
+            result = real_quarantine(directory_fd, source, destination)
+            if source == public_name:
+                quarantine = history / destination
+                quarantine.rename(displaced)
+                public.mkdir()
+                metadata = public.stat()
+                competitor_identity = (metadata.st_dev, metadata.st_ino)
+            return result
+
+        with (
+            mock.patch.object(
+                self.module,
+                "_native_rename_noreplace",
+                side_effect=swap_during_quarantine,
+            ),
+            mock.patch.object(
+                self.module.os,
+                "rmdir",
+                side_effect=AssertionError("public os.rmdir must not be used"),
+            ),
+        ):
+            with self.assertRaises(self.module.StudioError):
+                self.module.status(project)
+
+        self.assertTrue(public.is_dir())
+        metadata = public.stat()
+        self.assertEqual(competitor_identity, (metadata.st_dev, metadata.st_ino))
+        displaced_metadata = displaced.stat()
+        self.assertEqual(
+            expected_identity,
+            (displaced_metadata.st_dev, displaced_metadata.st_ino),
+        )
+        self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
 
     def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
         stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")

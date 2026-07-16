@@ -64,6 +64,7 @@ _PROJECT_KEYS = frozenset(
 _LOCK_NAME = ".video-script-studio-state.lock"
 JOURNAL_NAME = ".video-script-studio-reopen.json"
 _STAGING_PATTERN = re.compile(r"^\.reopen-txn-[0-9a-f]{32}$")
+_QUARANTINE_PATTERN = re.compile(r"^\.reopen-delete-[0-9a-f]{32}$")
 _RESERVED_TEMP_PATTERN = re.compile(
     r"^(?:\.project\.yaml|\.\.video-script-studio-reopen\.json)\.[0-9a-f]{32}\.tmp$"
 )
@@ -408,6 +409,56 @@ def _entry_exists_at(directory_fd: int, name: str) -> bool:
 def _remove_flat_directory_at(
     parent_fd: int, name: str, expected_identity: tuple[int, int]
 ) -> None:
+    quarantine = f".reopen-delete-{uuid.uuid4().hex}"
+    _native_rename_noreplace(parent_fd, name, quarantine)
+    try:
+        os.fsync(parent_fd)
+        quarantine_identity = _snapshot_identity_at(parent_fd, quarantine)
+        if quarantine_identity != expected_identity:
+            if quarantine_identity is not None:
+                try:
+                    _native_rename_noreplace(parent_fd, quarantine, name)
+                    os.fsync(parent_fd)
+                except StudioError:
+                    pass
+            raise StudioError("Quarantined transaction directory identity changed.")
+        _delete_quarantined_directory_at(parent_fd, quarantine, expected_identity)
+    except BaseException:
+        # A mismatched inode is never deleted.  Restore it to the public name
+        # when that name is still free; otherwise preserve it in quarantine.
+        current_identity = _snapshot_identity_at(parent_fd, quarantine)
+        if current_identity is not None and current_identity != expected_identity:
+            try:
+                _native_rename_noreplace(parent_fd, quarantine, name)
+                os.fsync(parent_fd)
+            except StudioError:
+                pass
+        raise
+
+
+def _native_rmdir_at(parent_fd: int, name: str) -> None:
+    """Remove an empty, randomly named quarantine without using os.rmdir."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        unlinkat = libc.unlinkat
+        unlinkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        unlinkat.restype = ctypes.c_int
+        at_removedir = 0x80 if sys.platform == "darwin" else 0x200
+        result = unlinkat(parent_fd, os.fsencode(name), at_removedir)
+    except (AttributeError, OSError) as exc:
+        raise StudioError(_UNSUPPORTED) from exc
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise StudioError("Could not remove the transaction quarantine.") from OSError(
+            error_number, os.strerror(error_number), name
+        )
+
+
+def _delete_quarantined_directory_at(
+    parent_fd: int, name: str, expected_identity: tuple[int, int]
+) -> None:
+    if not _QUARANTINE_PATTERN.fullmatch(name):
+        raise StudioError("The transaction quarantine name is invalid.")
     descriptor: int | None = None
     try:
         descriptor = os.open(
@@ -429,7 +480,7 @@ def _remove_flat_directory_at(
                 raise StudioError("Transaction data contains an unexpected directory.")
             os.unlink(child, dir_fd=descriptor)
         # Keep the inode-bound descriptor open and re-check its pathname at the
-        # last possible point before POSIX's pathname-based rmdir call.
+        # last possible point before unlinking the unpredictable quarantine.
         opened = os.fstat(descriptor)
         linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (
@@ -438,7 +489,7 @@ def _remove_flat_directory_at(
             or (linked.st_dev, linked.st_ino) != expected_identity
         ):
             raise StudioError("Transaction directory changed during cleanup.")
-        os.rmdir(name, dir_fd=parent_fd)
+        _native_rmdir_at(parent_fd, name)
         os.fsync(parent_fd)
     except StudioError:
         raise
@@ -691,24 +742,47 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                     identity = _snapshot_identity_at(history_fd, name)
                     if identity is not None:
                         _remove_flat_directory_at(history_fd, name, identity)
+                elif _QUARANTINE_PATTERN.fullmatch(name):
+                    identity = _snapshot_identity_at(history_fd, name)
+                    if identity is not None:
+                        _delete_quarantined_directory_at(history_fd, name, identity)
             return
 
         journal = _read_journal_at(project_fd)
         state = _load_state_at(project_fd)
         staging_name = journal["staging_name"]
         snapshot_name = journal["snapshot_name"]
+        expected_identity = _journal_snapshot_identity(journal)
+        target_committed = _transaction_state_matches(state, journal, "target")
+        old_state = _transaction_state_matches(state, journal, "old")
+        if not target_committed and not old_state:
+            raise StudioError("Project state conflicts with its recovery journal.")
+        for name in os.listdir(history_fd):
+            if not _QUARANTINE_PATTERN.fullmatch(name):
+                continue
+            quarantine_identity = _snapshot_identity_at(history_fd, name)
+            if quarantine_identity != expected_identity:
+                raise StudioError("A competing transaction quarantine was found.")
+            if target_committed:
+                if _snapshot_identity_at(history_fd, snapshot_name) is not None:
+                    raise StudioError("Committed history has an unexpected quarantine.")
+                _native_rename_noreplace(history_fd, name, snapshot_name)
+                os.fsync(history_fd)
+            else:
+                _delete_quarantined_directory_at(
+                    history_fd, name, expected_identity
+                )
         staging_identity = _snapshot_identity_at(history_fd, staging_name)
         final_identity = _snapshot_identity_at(history_fd, snapshot_name)
-        expected_identity = _journal_snapshot_identity(journal)
         if staging_identity is not None and staging_identity != expected_identity:
             raise StudioError("The transaction staging directory was replaced.")
-        if _transaction_state_matches(state, journal, "target"):
+        if target_committed:
             if final_identity is None:
                 raise StudioError("Committed project state is missing its history snapshot.")
             if final_identity != expected_identity:
                 raise StudioError("The history snapshot was replaced during recovery.")
             _validate_snapshot_at(history_fd, journal)
-        elif _transaction_state_matches(state, journal, "old"):
+        elif old_state:
             # A remaining staging directory proves this transaction did not
             # publish; an identically named final entry therefore predates it.
             if staging_identity is None and final_identity is not None:
@@ -721,8 +795,6 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                 _remove_flat_directory_at(
                     history_fd, snapshot_name, expected_identity
                 )
-        else:
-            raise StudioError("Project state conflicts with its recovery journal.")
         if staging_identity is not None:
             _remove_flat_directory_at(history_fd, staging_name, expected_identity)
         _unlink_if_present(project_fd, JOURNAL_NAME)
@@ -731,6 +803,10 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                 identity = _snapshot_identity_at(history_fd, name)
                 if identity is not None:
                     _remove_flat_directory_at(history_fd, name, identity)
+            elif _QUARANTINE_PATTERN.fullmatch(name):
+                identity = _snapshot_identity_at(history_fd, name)
+                if identity is not None:
+                    _delete_quarantined_directory_at(history_fd, name, identity)
     finally:
         os.close(history_fd)
 
