@@ -18,7 +18,37 @@ die() {
   exit 1
 }
 
+official_validator_path() {
+  local original_home="${HOME:?HOME is required to locate Codex dependencies}"
+  local original_codex_home="${CODEX_HOME:-$original_home/.codex}"
+  printf '%s\n' "$original_codex_home/skills/.system/skill-creator/scripts/quick_validate.py"
+}
+
+validate_official_validator() {
+  local validator=$1
+  command -v python3 >/dev/null 2>&1 || die "required command is unavailable: python3"
+  python3 - "$validator" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+validator = Path(sys.argv[1])
+try:
+    metadata = validator.lstat()
+except OSError:
+    raise SystemExit("official validator is unavailable or unsafe")
+if (validator.resolve() != validator or validator.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o022 or not os.access(validator, os.R_OK)):
+    raise SystemExit("official validator is unavailable or unsafe")
+PY
+}
+
 static_preflight() {
+  local validator
+  validator="$(official_validator_path)"
+  validate_official_validator "$validator"
   [[ -d "$SOURCE_SKILL/scripts" ]] || die "source skill is missing"
   [[ -f "$INITIAL_PROMPT" && -f "$GATE_SCHEMA" && -f "$REVIEW_SCHEMA" \
      && -f "$FINAL_SCHEMA" ]] \
@@ -67,7 +97,7 @@ ISOLATED_PATH="$(dirname "$CODEX_BIN"):$(dirname "$PYTHON_BIN"):$(dirname "$UV_B
 ORIGINAL_HOME="${HOME:?HOME is required to locate the existing Codex authentication file}"
 ORIGINAL_CODEX_HOME="${CODEX_HOME:-$ORIGINAL_HOME/.codex}"
 ORIGINAL_AUTH="$ORIGINAL_CODEX_HOME/auth.json"
-OFFICIAL_VALIDATOR="/Users/apulu/.codex/skills/.system/skill-creator/scripts/quick_validate.py"
+OFFICIAL_VALIDATOR="$ORIGINAL_CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py"
 TURN_TIMEOUT="${VIDEO_SCRIPT_STUDIO_E2E_TIMEOUT_SECONDS:-900}"
 [[ "$TURN_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "timeout must be a positive integer"
 
@@ -116,20 +146,6 @@ mkdir -m 700 "$TMP_HOME" "$TMP_CODEX_HOME" "$TMP_XDG_CONFIG" "$TMP_XDG_DATA" \
   GIT_CONFIG_NOSYSTEM=1 "$GIT_BIN" -c init.defaultBranch=main -C "$TMP_WORKSPACE" init -q
 [[ ! -e "$TMP_WORKSPACE/AGENTS.md" && ! -e "$TMP_WORKSPACE/.codex" \
    && ! -e "$TMP_WORKSPACE/.agents" ]] || die "workspace isolation failed"
-
-"$PYTHON_BIN" - "$OFFICIAL_VALIDATOR" <<'PY'
-import os
-import stat
-import sys
-from pathlib import Path
-
-validator = Path(sys.argv[1])
-metadata = validator.lstat()
-if (validator.resolve() != validator or validator.is_symlink()
-        or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-        or stat.S_IMODE(metadata.st_mode) & 0o022):
-    raise SystemExit("official validator is unavailable or unsafe")
-PY
 
 mkdir -m 700 "$TMP_CODEX_HOME/skills"
 [[ ! -e "$TMP_CODEX_HOME/skills/video-script-studio" ]] \
@@ -193,6 +209,7 @@ PY
   PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -m unittest discover \
   -s "$INSTALLED_SKILL/tests" -v >"$TMP_LOGS/copied-tests.log" 2>&1 \
   || die "copied deterministic suite failed"
+validate_official_validator "$OFFICIAL_VALIDATOR"
 "$ENV_BIN" -i PATH="$ISOLATED_PATH" HOME="$TMP_HOME" CODEX_HOME="$TMP_CODEX_HOME" \
   XDG_CONFIG_HOME="$TMP_XDG_CONFIG" XDG_DATA_HOME="$TMP_XDG_DATA" \
   XDG_CACHE_HOME="$TMP_XDG_CACHE" TMPDIR="$TMP_TMPDIR" \

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,15 +20,32 @@ class HarnessContractTests(unittest.TestCase):
             ["bash", "-n", str(HARNESS)], capture_output=True, text=True, check=False
         )
         self.assertEqual(0, syntax.returncode, syntax.stderr)
-        preflight = subprocess.run(
-            ["bash", str(HARNESS), "--preflight"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(0, preflight.returncode, preflight.stderr)
-        self.assertEqual("video-script-studio-e2e preflight ok\n", preflight.stdout)
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            home = temporary_root / "home"
+            codex_home = temporary_root / "portable-codex-home"
+            home.mkdir()
+            environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
+            missing = subprocess.run(
+                ["bash", str(HARNESS), "--preflight"], cwd=REPO_ROOT,
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(0, missing.returncode)
+            self.assertIn("official validator is unavailable or unsafe", missing.stderr)
+
+            validator = (
+                codex_home / "skills" / ".system" / "skill-creator" /
+                "scripts" / "quick_validate.py"
+            )
+            validator.parent.mkdir(parents=True)
+            validator.write_text("# portable validator fixture\n", encoding="utf-8")
+            validator.chmod(0o600)
+            preflight = subprocess.run(
+                ["bash", str(HARNESS), "--preflight"], cwd=REPO_ROOT,
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(0, preflight.returncode, preflight.stderr)
+            self.assertEqual("video-script-studio-e2e preflight ok\n", preflight.stdout)
 
         content = HARNESS.read_text(encoding="utf-8")
         for required in (
@@ -92,8 +111,9 @@ class HarnessContractTests(unittest.TestCase):
             content.index("official-validator.log"),
             content.index("# Authentication is deliberately untouched"),
         )
+        self.assertNotIn("/Users/apulu", content)
         self.assertIn(
-            'OFFICIAL_VALIDATOR="/Users/apulu/.codex/skills/.system/skill-creator/scripts/quick_validate.py"',
+            'OFFICIAL_VALIDATOR="$ORIGINAL_CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py"',
             content,
         )
 
