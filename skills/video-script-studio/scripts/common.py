@@ -16,6 +16,12 @@ class StudioError(Exception):
     """A safe, user-facing error raised by studio domain operations."""
 
 
+# Reserve 55 bytes in a 255-byte filename component for date and collision suffixes.
+MAX_SLUG_BYTES = 200
+# Bound recursion and the size of indentation in state files.
+MAX_STATE_DEPTH = 64
+
+
 def utc_now_iso() -> str:
     """Return the current UTC time at second precision with a ``Z`` suffix."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -27,6 +33,8 @@ def safe_slug(value: str) -> str:
         raise StudioError("The video title must be text.")
     slug = re.sub(r"[^A-Za-z0-9\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff-]+", "-", value)
     slug = re.sub(r"-+", "-", slug).strip("-")
+    limited = slug.encode("utf-8")[:MAX_SLUG_BYTES]
+    slug = limited.decode("utf-8", errors="ignore").rstrip("-")
     return slug or "untitled-video"
 
 
@@ -63,9 +71,14 @@ def atomic_write_text(path: str | os.PathLike[str], content: str) -> None:
 
 def read_json(path: str | os.PathLike[str]) -> dict[str, Any]:
     """Read a UTF-8 JSON object and reject malformed or non-object roots."""
+    def reject_non_finite(constant: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {constant}")
+
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = json.loads(
+            Path(path).read_text(encoding="utf-8"), parse_constant=reject_non_finite
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
         raise StudioError("Could not read valid JSON data.") from exc
     if not isinstance(value, dict):
         raise StudioError("JSON data must contain an object at its root.")
@@ -92,29 +105,42 @@ def _yaml_key(key: str) -> str:
     return key if _PLAIN_KEY.fullmatch(key) else json.dumps(key, ensure_ascii=False)
 
 
-def _dump_mapping(value: Mapping[str, Any], indent: int) -> list[str]:
+def _dump_mapping(
+    value: Mapping[str, Any], indent: int, depth: int, ancestors: set[int]
+) -> list[str]:
+    if depth > MAX_STATE_DEPTH:
+        raise StudioError("State exceeds the maximum nesting depth.")
+    identity = id(value)
+    if identity in ancestors:
+        raise StudioError("State contains a cyclic mapping.")
+    ancestors.add(identity)
     lines: list[str] = []
-    if any(not isinstance(key, str) for key in value):
-        raise StudioError("State mapping keys must be strings.")
-    for key in sorted(value):
-        item = value[key]
-        prefix = " " * indent + _yaml_key(key) + ":"
-        if isinstance(item, Mapping):
-            if item:
-                lines.append(prefix)
-                lines.extend(_dump_mapping(item, indent + 2))
+    try:
+        if any(not isinstance(key, str) for key in value):
+            raise StudioError("State mapping keys must be strings.")
+        for key in sorted(value):
+            item = value[key]
+            prefix = " " * indent + _yaml_key(key) + ":"
+            if isinstance(item, Mapping):
+                if item:
+                    lines.append(prefix)
+                    lines.extend(
+                        _dump_mapping(item, indent + 2, depth + 1, ancestors)
+                    )
+                else:
+                    lines.append(prefix + " {}")
+            elif isinstance(item, str):
+                lines.append(prefix + " " + json.dumps(item, ensure_ascii=False))
+            elif item is True:
+                lines.append(prefix + " true")
+            elif item is False:
+                lines.append(prefix + " false")
+            elif item is None:
+                lines.append(prefix + " null")
             else:
-                lines.append(prefix + " {}")
-        elif isinstance(item, str):
-            lines.append(prefix + " " + json.dumps(item, ensure_ascii=False))
-        elif item is True:
-            lines.append(prefix + " true")
-        elif item is False:
-            lines.append(prefix + " false")
-        elif item is None:
-            lines.append(prefix + " null")
-        else:
-            raise StudioError("State contains an unsupported value type.")
+                raise StudioError("State contains an unsupported value type.")
+    finally:
+        ancestors.remove(identity)
     return lines
 
 
@@ -122,7 +148,10 @@ def dump_state_yaml(state: dict[str, Any]) -> str:
     """Dump the supported deterministic YAML subset without dependencies."""
     if not isinstance(state, dict):
         raise StudioError("State must be a dictionary.")
-    lines = _dump_mapping(state, 0)
+    try:
+        lines = _dump_mapping(state, 0, 0, set())
+    except RecursionError as exc:
+        raise StudioError("State exceeds safe serialization depth.") from exc
     return "\n".join(lines) + "\n" if lines else "{}\n"
 
 
@@ -164,7 +193,9 @@ def _parse_state_yaml(content: str) -> dict[str, Any]:
     """Parse the mapping-only YAML subset emitted by :func:`dump_state_yaml`."""
     if content.strip() == "{}":
         return {}
-    raw_lines = content.splitlines()
+    raw_lines = content.split("\n")
+    if raw_lines and raw_lines[-1] == "":
+        raw_lines.pop()
     if not raw_lines or any(not line.strip() for line in raw_lines):
         raise StudioError("State YAML must be a non-empty mapping.")
 
@@ -177,7 +208,11 @@ def _parse_state_yaml(content: str) -> dict[str, Any]:
             raise StudioError("State YAML indentation must use two-space levels.")
         entries.append((leading, line[leading:]))
 
-    def parse_mapping(index: int, expected_indent: int) -> tuple[dict[str, Any], int]:
+    def parse_mapping(
+        index: int, expected_indent: int, depth: int
+    ) -> tuple[dict[str, Any], int]:
+        if depth > MAX_STATE_DEPTH:
+            raise StudioError("State YAML exceeds the maximum nesting depth.")
         result: dict[str, Any] = {}
         while index < len(entries):
             indent, entry = entries[index]
@@ -194,12 +229,12 @@ def _parse_state_yaml(content: str) -> dict[str, Any]:
             else:
                 if index >= len(entries) or entries[index][0] != expected_indent + 2:
                     raise StudioError("State YAML contains an empty nested mapping.")
-                result[key], index = parse_mapping(index, expected_indent + 2)
+                result[key], index = parse_mapping(index, expected_indent + 2, depth + 1)
         return result, index
 
     if entries[0][0] != 0:
         raise StudioError("State YAML must start with a root mapping.")
-    state, final_index = parse_mapping(0, 0)
+    state, final_index = parse_mapping(0, 0, 0)
     if final_index != len(entries):
         raise StudioError("State YAML contains trailing invalid data.")
     return state
@@ -211,4 +246,7 @@ def load_state_yaml(path: Path) -> dict[str, Any]:
         content = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise StudioError("Could not read the state YAML file.") from exc
-    return _parse_state_yaml(content)
+    try:
+        return _parse_state_yaml(content)
+    except RecursionError as exc:
+        raise StudioError("State YAML exceeds safe parsing depth.") from exc

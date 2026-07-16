@@ -55,6 +55,19 @@ class CommonContractTests(unittest.TestCase):
         self.assertEqual("already-safe", self.common.safe_slug("already-safe"))
         self.assertEqual("untitled-video", self.common.safe_slug("?!"))
 
+    def test_safe_slug_respects_utf8_byte_limit_without_splitting_characters(self) -> None:
+        ascii_slug = self.common.safe_slug("a" * (self.common.MAX_SLUG_BYTES + 10))
+        self.assertEqual(self.common.MAX_SLUG_BYTES, len(ascii_slug.encode("utf-8")))
+
+        multibyte_slug = self.common.safe_slug("你" * 100)
+        self.assertEqual("你" * 66, multibyte_slug)
+        self.assertLessEqual(
+            len(multibyte_slug.encode("utf-8")), self.common.MAX_SLUG_BYTES
+        )
+
+        trailing_hyphen = self.common.safe_slug("a" * 199 + "-suffix")
+        self.assertEqual("a" * 199, trailing_hyphen)
+
     def test_atomic_write_text_creates_parents_and_replaces_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "state.txt"
@@ -81,6 +94,15 @@ class CommonContractTests(unittest.TestCase):
             path.write_text("{broken", encoding="utf-8")
             with self.assertRaises(self.common.StudioError):
                 self.common.read_json(path)
+
+    def test_read_json_rejects_non_finite_constants(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.json"
+            for constant in ("NaN", "Infinity", "-Infinity"):
+                path.write_text(f'{{"value": {constant}}}', encoding="utf-8")
+                with self.subTest(constant=constant):
+                    with self.assertRaises(self.common.StudioError):
+                        self.common.read_json(path)
 
     def test_write_json_is_stable_atomic_and_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -111,6 +133,43 @@ class CommonContractTests(unittest.TestCase):
             self.assertEqual(state, self.common.load_state_yaml(path))
         self.assertLess(dumped.index("missing:"), dumped.index("nested:"))
         self.assertLess(dumped.index("nested:"), dumped.index("ready:"))
+
+    def test_state_yaml_round_trips_unicode_line_separators_in_values_and_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.yaml"
+            for separator in ("\u0085", "\u2028", "\u2029"):
+                state = {f"key{separator}part": f"value{separator}part"}
+                path.write_text(self.common.dump_state_yaml(state), encoding="utf-8")
+                with self.subTest(codepoint=f"U+{ord(separator):04X}"):
+                    self.assertEqual(state, self.common.load_state_yaml(path))
+
+    def test_state_yaml_rejects_cyclic_mappings(self) -> None:
+        cyclic: dict[str, object] = {}
+        cyclic["self"] = cyclic
+        with self.assertRaises(self.common.StudioError):
+            self.common.dump_state_yaml(cyclic)
+
+    def test_state_yaml_rejects_excessive_dump_depth(self) -> None:
+        deep: dict[str, object] = {}
+        cursor = deep
+        for _ in range(self.common.MAX_STATE_DEPTH + 1):
+            child: dict[str, object] = {}
+            cursor["child"] = child
+            cursor = child
+        cursor["value"] = "end"
+        with self.assertRaises(self.common.StudioError):
+            self.common.dump_state_yaml(deep)
+
+    def test_state_yaml_rejects_excessive_load_depth(self) -> None:
+        lines = []
+        for depth in range(self.common.MAX_STATE_DEPTH + 2):
+            suffix = ' "end"' if depth == self.common.MAX_STATE_DEPTH + 1 else ""
+            lines.append("  " * depth + f"level{depth}:" + suffix)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "deep.yaml"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with self.assertRaises(self.common.StudioError):
+                self.common.load_state_yaml(path)
 
     def test_state_yaml_rejects_unsupported_values_and_invalid_schema(self) -> None:
         with self.assertRaises(self.common.StudioError):
