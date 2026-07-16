@@ -54,6 +54,42 @@
 本项目没有外部事实来源；用户素材身份与创作假设已记录在 research.md。
 ```
 
+需要外部调研时，下面的完整示例精确展示嵌套类型、允许枚举和与执行稿 `[C01]` 标记的双向对应。
+
+<!-- example:sources.md:researched -->
+```markdown
+---
+{
+  "schema_version": 1,
+  "research_required": true,
+  "decision_reason": "脚本包含需要外部全文支持的事实主张。",
+  "sources": [
+    {
+      "id": "S01",
+      "title": "完整来源示例",
+      "provenance": {"url": "https://example.com/full-source"},
+      "level": "primary",
+      "capture_status": "complete",
+      "body_status": "full-text",
+      "accessed_at": "2026-07-17"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "C01",
+      "text": "经验证的示例事实。",
+      "claim_type": "factual",
+      "source_ids": ["S01"],
+      "confidence": "high"
+    }
+  ]
+}
+---
+# Sources
+
+制作执行稿必须且只能出现一次 `[C01]`；来源标题不代替全文捕获。
+```
+
 ## review.md
 
 文件以严格 JSON frontmatter 开始，字段为 schema_version、passed、total_score、core_dimensions、base_gates、revision_count。commercial 还必须设置 `合规` 标题。下面的 visual-essay 示例使用 canonical weights，加权总分为 85，七个基础门全部通过。

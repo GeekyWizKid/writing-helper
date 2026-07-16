@@ -23,7 +23,13 @@
 
 ## 输出契约
 
-`research.md` 保存问题树、结论边界、反例、素材卡和卖点—证据关系；`sources.md` 使用严格 JSON frontmatter，字段必须与校验器一致。事实、解释和创作假设分栏，不把推断写成来源原话。
+`research.md` 保存问题树、结论边界、反例、素材卡和卖点—证据关系；`sources.md` 使用严格 JSON frontmatter，字段必须与校验器一致。
+
+- 来源 id 用 `S01` 格式；`provenance` 必须是仅含 `{"url": "https://..."}` 或仅含 `{"file": "..."}` 的对象。
+- `level` 只允许 `primary` / `authoritative-secondary` / `expert` / `community`；`capture_status` 只允许 `complete` / `partial` / `unavailable`；`body_status` 只允许 `full-text` / `search-snippet` / `metadata-only` / `unavailable`。
+- 主张 id 用 `C01` 格式；`claim_type` 只允许 `factual` / `analysis` / `opinion` / `audience-language` / `anecdote`；`confidence` 只允许 `high` / `medium` / `low`；`source_ids` 是来源 id 字符串数组。
+
+事实、解释和创作假设分栏，不把推断写成来源原话。可执行的完整示例见 [制作包契约](../assets/production-pack-template.md)。
 
 ## 拒绝条件
 

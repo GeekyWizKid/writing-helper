@@ -283,6 +283,26 @@ class ReferenceContractTests(unittest.TestCase):
         )
         self.assertAlmostEqual(review["total_score"], recomputed, places=9)
 
+    def test_researched_source_example_is_executable_with_script_markers(self) -> None:
+        path = SKILL_ROOT / "assets" / "production-pack-template.md"
+        content = path.read_text(encoding="utf-8") if path.is_file() else ""
+        sources_text = marked_example(content, "sources.md:researched")
+        self.assertTrue(sources_text)
+
+        sources, _ = self.validator._frontmatter(sources_text)
+        result = self.source_validator.validate(
+            sources,
+            "## 制作执行稿\n经验证的示例事实。[C01]\n",
+        )
+        self.assertTrue(result["valid"], result)
+        self.assertEqual(1, result["source_count"])
+        self.assertEqual(1, result["claim_count"])
+
+    def test_discovery_does_not_hard_code_a_route_reference(self) -> None:
+        content = self.read_reference("discovery.md")
+        for route_file in ROUTE_REFERENCES:
+            self.assertNotIn(f"]({route_file})", content)
+
     def test_documents_have_no_placeholder_tokens_or_broken_local_links(self) -> None:
         paths = [self.references / name for name in REFERENCE_NAMES]
         paths.extend(
