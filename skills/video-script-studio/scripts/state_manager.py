@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
+import errno
 import json
 import os
+import re
 import stat
 import sys
 import threading
@@ -59,8 +62,17 @@ _PROJECT_KEYS = frozenset(
     ("date", "platform", "primary_type", "profile_id", "project_id", "secondary_type", "title")
 )
 _LOCK_NAME = ".video-script-studio-state.lock"
+JOURNAL_NAME = ".video-script-studio-reopen.json"
+_STAGING_PATTERN = re.compile(r"^\.reopen-txn-[0-9a-f]{32}$")
+_SNAPSHOT_PATTERN = re.compile(
+    r"^[A-Za-z0-9_-]{1,200}-(?:brief|research|concept|outline|script)$"
+)
 _UNSUPPORTED = "State management requires a trusted POSIX filesystem."
 _PROCESS_LOCK = threading.RLock()
+
+
+class _StateCommittedError(StudioError):
+    """The state rename committed, but its directory durability sync failed."""
 
 
 def _bounded_text(value: Any, field: str, *, nullable: bool = False) -> None:
@@ -184,6 +196,7 @@ def _locked_project(project: Path) -> Iterator[tuple[Path, int]]:
                 if created:
                     os.fchmod(lock_fd, 0o600)
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                _recover_transaction_at(project_fd)
                 yield resolved, project_fd
             except StudioError:
                 raise
@@ -208,7 +221,13 @@ def _read_regular_at(directory_fd: int, name: str, limit: int, label: str) -> by
             dir_fd=directory_fd,
         )
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+            or metadata.st_size > limit
+        ):
             raise StudioError(f"The {label} file is unsafe or too large.")
         chunks: list[bytes] = []
         remaining = limit + 1
@@ -251,6 +270,7 @@ def _write_all(descriptor: int, data: bytes) -> None:
 
 def _save_state_at(project_fd: int, state: dict[str, Any]) -> None:
     _validate_state(state)
+    committed = False
     try:
         payload = dump_state_yaml(state).encode("utf-8")
     except (UnicodeError, StudioError) as exc:
@@ -271,8 +291,13 @@ def _save_state_at(project_fd: int, state: dict[str, Any]) -> None:
         os.close(descriptor)
         descriptor = None
         os.rename(temporary, "project.yaml", src_dir_fd=project_fd, dst_dir_fd=project_fd)
+        committed = True
         os.fsync(project_fd)
     except OSError as exc:
+        if committed:
+            raise _StateCommittedError(
+                "The project state was committed, but its durability sync failed."
+            ) from exc
         raise StudioError("Could not publish the project state.") from exc
     finally:
         if descriptor is not None:
@@ -326,6 +351,7 @@ def _history_timestamp() -> str:
 
 
 def _open_history(project_fd: int) -> int:
+    descriptor: int | None = None
     try:
         descriptor = os.open(
             "history",
@@ -333,12 +359,20 @@ def _open_history(project_fd: int) -> int:
             dir_fd=project_fd,
         )
         metadata = os.fstat(descriptor)
-        if not stat.S_ISDIR(metadata.st_mode):
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
             raise StudioError("The project history path is unsafe.")
         return descriptor
     except StudioError:
+        if descriptor is not None:
+            os.close(descriptor)
         raise
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
         raise StudioError("Could not open project history safely.") from exc
 
 
@@ -358,27 +392,306 @@ def _write_exclusive_at(directory_fd: int, name: str, data: bytes) -> None:
             os.close(descriptor)
 
 
-def _remove_snapshot(history_fd: int, name: str, filenames: list[str]) -> None:
-    snapshot_fd: int | None = None
+def _entry_exists_at(directory_fd: int, name: str) -> bool:
     try:
-        snapshot_fd = os.open(
+        os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise StudioError("Could not inspect transaction data safely.") from exc
+
+
+def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
             name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        for child in os.listdir(descriptor):
+            metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                raise StudioError("Transaction data contains an unexpected directory.")
+            os.unlink(child, dir_fd=descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.rmdir(name, dir_fd=parent_fd)
+    except StudioError:
+        raise
+    except OSError as exc:
+        raise StudioError("Could not clean transaction data safely.") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _unlink_if_present(directory_fd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise StudioError("Could not clean the transaction journal.") from exc
+
+
+def _atomic_write_json_at(directory_fd: int, name: str, value: dict[str, Any]) -> None:
+    try:
+        payload = (
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise StudioError("Could not serialize the transaction journal.") from exc
+    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    renamed = False
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.rename(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        renamed = True
+        os.fsync(directory_fd)
+    except OSError as exc:
+        if renamed:
+            raise StudioError("The transaction journal was committed but not synced.") from exc
+        raise StudioError("Could not save the transaction journal.") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except OSError:
+            pass
+
+
+def _read_journal_at(project_fd: int) -> dict[str, Any]:
+    raw = _read_regular_at(project_fd, JOURNAL_NAME, MAX_STATE_BYTES, "transaction journal")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise StudioError("The transaction journal is invalid.") from exc
+    if not isinstance(value, dict):
+        raise StudioError("The transaction journal is invalid.")
+    required = {
+        "artifacts",
+        "old_approvals",
+        "old_stage",
+        "reason",
+        "snapshot_name",
+        "stage",
+        "staging_name",
+        "target_approvals",
+        "target_stage",
+        "version",
+    }
+    if set(value) != required or value.get("version") != "1":
+        raise StudioError("The transaction journal schema is invalid.")
+    if (
+        value.get("stage") not in STAGES
+        or not isinstance(value.get("reason"), str)
+        or not value["reason"].strip()
+        or len(value["reason"]) > MAX_REASON_CHARS
+        or not isinstance(value.get("staging_name"), str)
+        or not _STAGING_PATTERN.fullmatch(value["staging_name"])
+        or not isinstance(value.get("snapshot_name"), str)
+        or not _SNAPSHOT_PATTERN.fullmatch(value["snapshot_name"])
+        or not isinstance(value.get("artifacts"), list)
+        or any(item not in STAGE_FILES.values() for item in value["artifacts"])
+        or len(set(value["artifacts"])) != len(value["artifacts"])
+    ):
+        raise StudioError("The transaction journal schema is invalid.")
+    for prefix in ("old", "target"):
+        approvals = value.get(f"{prefix}_approvals")
+        stage_value = value.get(f"{prefix}_stage")
+        if (
+            not isinstance(approvals, dict)
+            or frozenset(approvals) != frozenset(STAGES)
+            or any(
+                not isinstance(status, str) or status not in _APPROVAL_VALUES
+                for status in approvals.values()
+            )
+            or not isinstance(stage_value, str)
+        ):
+            raise StudioError("The transaction journal schema is invalid.")
+        found_open = False
+        for approval_stage in STAGES:
+            status_value = approvals[approval_stage]
+            if found_open and status_value == "approved":
+                raise StudioError("The transaction journal approvals are invalid.")
+            if status_value != "approved":
+                found_open = True
+        first_open = next(
+            (approval_stage for approval_stage in STAGES if approvals[approval_stage] != "approved"),
+            None,
+        )
+        if first_open is not None and approvals[first_open] != "pending":
+            raise StudioError("The transaction journal approvals are invalid.")
+        if stage_value != _expected_stage(approvals):
+            raise StudioError("The transaction journal stage is invalid.")
+    transaction_stage = value["stage"]
+    if value["old_approvals"][transaction_stage] != "approved":
+        raise StudioError("The transaction journal transition is invalid.")
+    expected_target = copy.deepcopy(value["old_approvals"])
+    transaction_index = STAGES.index(transaction_stage)
+    expected_target[transaction_stage] = "pending"
+    for later in STAGES[transaction_index + 1 :]:
+        expected_target[later] = "invalidated"
+    if (
+        value["target_approvals"] != expected_target
+        or value["target_stage"] != f"{transaction_stage}_pending"
+    ):
+        raise StudioError("The transaction journal transition is invalid.")
+    return value
+
+
+def _transaction_state_matches(state: dict[str, Any], journal: dict[str, Any], prefix: str) -> bool:
+    return (
+        state["stage"] == journal[f"{prefix}_stage"]
+        and state["approvals"] == journal[f"{prefix}_approvals"]
+    )
+
+
+def _validate_snapshot_at(history_fd: int, journal: dict[str, Any]) -> None:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            journal["snapshot_name"],
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=history_fd,
         )
-        for filename in [*filenames, "manifest.json"]:
-            try:
-                os.unlink(filename, dir_fd=snapshot_fd)
-            except FileNotFoundError:
-                pass
-        os.close(snapshot_fd)
-        snapshot_fd = None
-        os.rmdir(name, dir_fd=history_fd)
-    except OSError:
-        pass
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise StudioError("The history snapshot directory is unsafe.")
+        expected = {*journal["artifacts"], "manifest.json"}
+        if set(os.listdir(descriptor)) != expected:
+            raise StudioError("The history snapshot contents are incomplete.")
+        for filename in journal["artifacts"]:
+            _read_regular_at(descriptor, filename, MAX_ARTIFACT_BYTES, "history artifact")
+        raw_manifest = _read_regular_at(
+            descriptor, "manifest.json", MAX_STATE_BYTES, "history manifest"
+        )
+        try:
+            manifest = json.loads(raw_manifest.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise StudioError("The history snapshot manifest is invalid.") from exc
+        if manifest != {
+            "affected_artifacts": sorted(journal["artifacts"]),
+            "reason": journal["reason"],
+            "stage": journal["stage"],
+        }:
+            raise StudioError("The history snapshot manifest is invalid.")
+    except StudioError:
+        raise
+    except OSError as exc:
+        raise StudioError("Could not validate the history snapshot safely.") from exc
     finally:
-        if snapshot_fd is not None:
-            os.close(snapshot_fd)
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> None:
+    """Reconcile a prior reopen using project.yaml as the commit record."""
+    has_journal = _entry_exists_at(project_fd, JOURNAL_NAME)
+    if not has_journal and not scan_orphans:
+        try:
+            history_metadata = os.stat(
+                "history", dir_fd=project_fd, follow_symlinks=False
+            )
+        except OSError:
+            return
+        if (
+            not stat.S_ISDIR(history_metadata.st_mode)
+            or stat.S_ISLNK(history_metadata.st_mode)
+            or history_metadata.st_uid != os.getuid()
+            or stat.S_IMODE(history_metadata.st_mode) & 0o022
+        ):
+            return
+    history_fd = _open_history(project_fd)
+    try:
+        if not has_journal:
+            for name in os.listdir(history_fd):
+                if _STAGING_PATTERN.fullmatch(name):
+                    _remove_flat_directory_at(history_fd, name)
+            return
+
+        journal = _read_journal_at(project_fd)
+        state = _load_state_at(project_fd)
+        staging_name = journal["staging_name"]
+        snapshot_name = journal["snapshot_name"]
+        staging_exists = _entry_exists_at(history_fd, staging_name)
+        if _transaction_state_matches(state, journal, "target"):
+            if not _entry_exists_at(history_fd, snapshot_name):
+                raise StudioError("Committed project state is missing its history snapshot.")
+            _validate_snapshot_at(history_fd, journal)
+        elif _transaction_state_matches(state, journal, "old"):
+            # A remaining staging directory proves this transaction did not
+            # publish; an identically named final entry therefore predates it.
+            if not staging_exists and _entry_exists_at(history_fd, snapshot_name):
+                _remove_flat_directory_at(history_fd, snapshot_name)
+        else:
+            raise StudioError("Project state conflicts with its recovery journal.")
+        if staging_exists:
+            _remove_flat_directory_at(history_fd, staging_name)
+        _unlink_if_present(project_fd, JOURNAL_NAME)
+        for name in os.listdir(history_fd):
+            if _STAGING_PATTERN.fullmatch(name):
+                _remove_flat_directory_at(history_fd, name)
+    finally:
+        os.close(history_fd)
+
+
+def _native_rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
+    """Atomically publish a same-directory snapshot without replacement."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            rename = libc.renameatx_np
+            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), 0x4)
+        elif sys.platform.startswith("linux"):
+            rename = libc.renameat2
+            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), 1)
+        else:
+            raise AttributeError("unsupported platform")
+    except (AttributeError, OSError) as exc:
+        raise StudioError(_UNSUPPORTED) from exc
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise StudioError("The history snapshot already exists.")
+    raise StudioError("Could not publish the history snapshot safely.")
+
+
+def _transaction_boundary(name: str) -> None:
+    """Test seam for simulating abrupt termination at durable boundaries."""
+
+
+def _build_target_state(state: dict[str, Any], stage: str) -> dict[str, Any]:
+    target = copy.deepcopy(state)
+    index = STAGES.index(stage)
+    target["approvals"][stage] = "pending"
+    for later in STAGES[index + 1 :]:
+        target["approvals"][later] = "invalidated"
+    target["stage"] = f"{stage}_pending"
+    return target
 
 
 def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
@@ -389,6 +702,7 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
         raise StudioError("The reopen reason must be nonblank and at most 4096 characters.")
 
     with _locked_project(project) as (resolved, project_fd):
+        _recover_transaction_at(project_fd, scan_orphans=True)
         state = _load_state_at(project_fd)
         if state["approvals"][stage] != "approved":
             raise StudioError("Only an approved stage can be reopened.")
@@ -402,15 +716,27 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
 
         history_fd = _open_history(project_fd)
         snapshot_name = f"{_history_timestamp()}-{stage}"
-        created = False
+        if not _SNAPSHOT_PATTERN.fullmatch(snapshot_name):
+            os.close(history_fd)
+            raise StudioError("The history snapshot name is invalid.")
+        staging_name = f".reopen-txn-{uuid.uuid4().hex}"
+        target = _build_target_state(state, stage)
+        journal = {
+            "artifacts": sorted(artifacts),
+            "old_approvals": copy.deepcopy(state["approvals"]),
+            "old_stage": state["stage"],
+            "reason": reason,
+            "snapshot_name": snapshot_name,
+            "stage": stage,
+            "staging_name": staging_name,
+            "target_approvals": copy.deepcopy(target["approvals"]),
+            "target_stage": target["stage"],
+            "version": "1",
+        }
         try:
-            try:
-                os.mkdir(snapshot_name, 0o700, dir_fd=history_fd)
-            except FileExistsError as exc:
-                raise StudioError("The history snapshot already exists.") from exc
-            created = True
+            os.mkdir(staging_name, 0o700, dir_fd=history_fd)
             snapshot_fd = os.open(
-                snapshot_name,
+                staging_name,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=history_fd,
             )
@@ -431,20 +757,23 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
             finally:
                 os.close(snapshot_fd)
             os.fsync(history_fd)
-
-            index = STAGES.index(stage)
-            state["approvals"][stage] = "pending"
-            for later in STAGES[index + 1 :]:
-                state["approvals"][later] = "invalidated"
-            state["stage"] = f"{stage}_pending"
+            _transaction_boundary("staged")
+            _atomic_write_json_at(project_fd, JOURNAL_NAME, journal)
+            _transaction_boundary("journaled")
+            _native_rename_noreplace(history_fd, staging_name, snapshot_name)
+            os.fsync(history_fd)
+            _transaction_boundary("snapshot-published")
+            _save_state_at(project_fd, target)
+            _transaction_boundary("state-committed")
+            _unlink_if_present(project_fd, JOURNAL_NAME)
+            state = target
+        except BaseException:
             try:
-                _save_state_at(project_fd, state)
-            except Exception:
-                _remove_snapshot(history_fd, snapshot_name, list(artifacts))
-                raise
-        except Exception:
-            if created:
-                _remove_snapshot(history_fd, snapshot_name, list(artifacts))
+                _recover_transaction_at(project_fd, scan_orphans=True)
+            except Exception as recovery_exc:
+                raise StudioError(
+                    "The reopen transaction requires recovery before continuing."
+                ) from recovery_exc
             raise
         finally:
             os.close(history_fd)

@@ -160,6 +160,108 @@ class StateManagerTests(unittest.TestCase):
         self.assertEqual(original, (self.project / "project.yaml").read_bytes())
         self.assertEqual([], list(history.iterdir()))
 
+    def test_post_commit_directory_fsync_failure_never_deletes_snapshot(self) -> None:
+        self.module.approve(self.project, "brief")
+        (self.project / "brief.md").write_text("approved brief\n", encoding="utf-8")
+        renamed_state = False
+        real_rename = self.module.os.rename
+        real_fsync = self.module.os.fsync
+
+        def track_state_rename(source, destination, *args, **kwargs):
+            nonlocal renamed_state
+            result = real_rename(source, destination, *args, **kwargs)
+            if destination == "project.yaml":
+                renamed_state = True
+            return result
+
+        def fail_post_commit_sync(descriptor):
+            if renamed_state:
+                raise OSError("directory sync failed")
+            return real_fsync(descriptor)
+
+        with (
+            mock.patch.object(self.module.os, "rename", side_effect=track_state_rename),
+            mock.patch.object(self.module.os, "fsync", side_effect=fail_post_commit_sync),
+        ):
+            with self.assertRaises(self.module.StudioError) as raised:
+                self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertIn("committed", str(raised.exception).lower())
+        self.assertEqual("brief_pending", self.module.load_state(self.project)["stage"])
+        public = [p for p in (self.project / "history").iterdir() if not p.name.startswith(".")]
+        self.assertEqual(1, len(public))
+        self.assertTrue((public[0] / "manifest.json").is_file())
+
+    def test_reopen_recovers_keyboard_interrupt_at_every_transaction_boundary(self) -> None:
+        for boundary in ("staged", "journaled", "snapshot-published", "state-committed"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                result = self.initializer.init_project(
+                    Path(directory), "Crash Test", "short-form", date="2026-07-17"
+                )
+                project = Path(result["path"])
+                self.module.approve(project, "brief")
+                (project / "brief.md").write_text("approved\n", encoding="utf-8")
+
+                def interrupt(name):
+                    if name == boundary:
+                        raise KeyboardInterrupt(name)
+
+                with mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.module.reopen(project, "brief", reason="rewrite")
+
+                state = self.module.status(project)
+                history_entries = list((project / "history").iterdir())
+                self.assertFalse(any(p.name.startswith(".") for p in history_entries))
+                self.assertFalse((project / self.module.JOURNAL_NAME).exists())
+                if boundary == "state-committed":
+                    self.assertEqual("brief_pending", state["stage"])
+                    self.assertEqual(1, len(history_entries))
+                    self.assertTrue((history_entries[0] / "manifest.json").is_file())
+                else:
+                    self.assertEqual("research_pending", state["stage"])
+                    self.assertEqual([], history_entries)
+
+    def test_next_operation_recovers_persisted_pre_and_post_commit_journals(self) -> None:
+        for boundary in ("snapshot-published", "state-committed"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                result = self.initializer.init_project(
+                    Path(directory), "Journal Test", "short-form", date="2026-07-17"
+                )
+                project = Path(result["path"])
+                self.module.approve(project, "brief")
+                real_recover = self.module._recover_transaction_at
+
+                def interrupt(name):
+                    if name == boundary:
+                        raise KeyboardInterrupt(name)
+
+                def leave_journal_for_next_operation(project_fd, *, scan_orphans=False):
+                    if scan_orphans and (project / self.module.JOURNAL_NAME).exists():
+                        raise self.module.StudioError("simulated recovery interruption")
+                    return real_recover(project_fd, scan_orphans=scan_orphans)
+
+                with (
+                    mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt),
+                    mock.patch.object(
+                        self.module,
+                        "_recover_transaction_at",
+                        side_effect=leave_journal_for_next_operation,
+                    ),
+                ):
+                    with self.assertRaises(self.module.StudioError):
+                        self.module.reopen(project, "brief", reason="rewrite")
+                self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
+
+                state = self.module.status(project)
+                self.assertFalse((project / self.module.JOURNAL_NAME).exists())
+                history = list((project / "history").iterdir())
+                if boundary == "state-committed":
+                    self.assertEqual("brief_pending", state["stage"])
+                    self.assertEqual(1, len(history))
+                else:
+                    self.assertEqual("research_pending", state["stage"])
+                    self.assertEqual([], history)
+
     def test_existing_snapshot_name_is_never_overwritten(self) -> None:
         self.module.approve(self.project, "brief")
         with mock.patch.object(self.module, "_history_timestamp", return_value="fixed"):
@@ -225,6 +327,43 @@ class StateManagerTests(unittest.TestCase):
             self.module.reopen(self.project, "brief", reason="rewrite")
         self.assertEqual(approved_state, state_path.read_bytes())
         self.assertEqual([], list((self.project / "history").iterdir()))
+
+    def test_rejects_untrusted_state_artifact_and_history_metadata_without_mutation(self) -> None:
+        state_path = self.project / "project.yaml"
+        original = state_path.read_bytes()
+        state_path.chmod(0o666)
+        with self.assertRaises(self.module.StudioError):
+            self.module.load_state(self.project)
+        state_path.chmod(0o600)
+        state_hardlink = self.project / "project-copy.yaml"
+        os.link(state_path, state_hardlink)
+        with self.assertRaises(self.module.StudioError):
+            self.module.load_state(self.project)
+        state_hardlink.unlink()
+
+        self.module.approve(self.project, "brief")
+        approved = state_path.read_bytes()
+        artifact = self.project / "brief.md"
+        artifact.chmod(0o666)
+        with self.assertRaises(self.module.StudioError):
+            self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertEqual(approved, state_path.read_bytes())
+        artifact.chmod(0o600)
+
+        history = self.project / "history"
+        history.chmod(0o777)
+        with self.assertRaises(self.module.StudioError):
+            self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertEqual(approved, state_path.read_bytes())
+        history.chmod(0o755)
+
+        hardlink = self.project / "brief-copy.md"
+        os.link(artifact, hardlink)
+        with self.assertRaises(self.module.StudioError):
+            self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertEqual(approved, state_path.read_bytes())
+        hardlink.unlink()
+        self.assertEqual([], list(history.iterdir()))
 
     def test_rejects_malformed_and_oversized_state(self) -> None:
         state_path = self.project / "project.yaml"
