@@ -132,6 +132,9 @@ class HarnessContractTests(unittest.TestCase):
             "assert_approved_unchanged",
             "gate_result_diagnostic.py",
             "gate_result_awaiting_gate_mismatch",
+            "write_gate_schema",
+            '"const": gate',
+            '"const": artifact',
             "DURATION_INPUT",
             "DURATION_RESULT",
             "independent-review",
@@ -151,6 +154,7 @@ class HarnessContractTests(unittest.TestCase):
         self.assertNotIn("VIDEO_SCRIPT_STUDIO_OFFICIAL_VALIDATOR", content)
         self.assertIn("private log withheld", content)
         self.assertEqual(7, content.count("run_codex_turn "))
+        self.assertEqual(5, content.count("write_gate_schema \"$TURN"))
         self.assertEqual(
             7, content.count('assert_matches_initializer_baseline "$PROJECT"')
         )

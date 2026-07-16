@@ -389,6 +389,31 @@ json.loads(open(sys.argv[1], encoding="utf-8").read())
 PY
 }
 
+write_gate_schema() {
+  local destination=$1
+  local gate=$2
+  local artifact=$3
+  "$PYTHON_BIN" - "$RUNTIME_GATE_SCHEMA" "$destination" "$gate" "$artifact" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:3])
+gate, artifact = sys.argv[3:]
+schema = json.loads(source.read_text(encoding="utf-8"))
+gate_values = schema["properties"]["awaiting_gate"].get("enum", [])
+artifact_values = schema["properties"]["artifact"].get("enum", [])
+if gate not in gate_values or artifact not in artifact_values:
+    raise SystemExit("gate schema requested an unsupported stop point")
+schema["properties"]["awaiting_gate"] = {"const": gate}
+schema["properties"]["artifact"] = {"const": artifact}
+destination.write_text(
+    json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 write_initial_prompt() {
   "$PYTHON_BIN" - "$RUNTIME_INITIAL_PROMPT" "$1" "$PROJECT_ROOT" <<'PY'
 import sys
@@ -650,8 +675,10 @@ PY
 
 TURN1_PROMPT="$RUN_ROOT/turn-1.md"
 TURN1_RESULT="$RUN_ROOT/turn-1.json"
+TURN1_SCHEMA="$RUN_ROOT/turn-1.schema.json"
 write_initial_prompt "$TURN1_PROMPT"
-run_codex_turn "$TURN1_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN1_RESULT" "$TMP_LOGS/turn-1.log"
+write_gate_schema "$TURN1_SCHEMA" brief brief.md
+run_codex_turn "$TURN1_PROMPT" "$TURN1_SCHEMA" "$TURN1_RESULT" "$TMP_LOGS/turn-1.log"
 
 PROJECT="$($PYTHON_BIN - "$TURN1_RESULT" "$PROJECT_ROOT" <<'PY'
 import json
@@ -692,9 +719,11 @@ snapshot_project "$PROJECT" "$SNAPSHOT1"
 
 TURN2_PROMPT="$RUN_ROOT/turn-2.md"
 TURN2_RESULT="$RUN_ROOT/turn-2.json"
+TURN2_SCHEMA="$RUN_ROOT/turn-2.schema.json"
 write_resume_prompt "$TURN2_PROMPT" "$PROJECT" brief "brief.md" "$BRIEF_HASH" research research.md \
   "记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md，sources/claims 均为空；把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。"
-run_codex_turn "$TURN2_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN2_RESULT" "$TMP_LOGS/turn-2.log"
+write_gate_schema "$TURN2_SCHEMA" research research.md
+run_codex_turn "$TURN2_PROMPT" "$TURN2_SCHEMA" "$TURN2_RESULT" "$TMP_LOGS/turn-2.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_gate_result "$TURN2_RESULT" "$PROJECT" research research.md
 assert_exact_approvals "$PROJECT" research_pending "brief" "$RUN_ROOT/status-2.json"
@@ -706,9 +735,11 @@ RESEARCH_HASH="$(combined_sha256 "$PROJECT/research.md" "$PROJECT/sources.md")"
 
 TURN3_PROMPT="$RUN_ROOT/turn-3.md"
 TURN3_RESULT="$RUN_ROOT/turn-3.json"
+TURN3_SCHEMA="$RUN_ROOT/turn-3.schema.json"
 write_resume_prompt "$TURN3_PROMPT" "$PROJECT" research "research.md + sources.md" "$RESEARCH_HASH" concept concepts.md \
   "生成恰好三个实质不同且可拍的概念，只能使用三个二级标题：## 方案 A、## 方案 B、## 方案 C。A 必须是‘纹理档案’，B 必须是‘双重轨迹’并标记推荐但待用户选择，C 必须是‘声音地图’；逐项写观看理由、叙事引擎、转折、声音、难度和风险，不要替用户批准。完成后停止。"
-run_codex_turn "$TURN3_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN3_RESULT" "$TMP_LOGS/turn-3.log"
+write_gate_schema "$TURN3_SCHEMA" concept concepts.md
+run_codex_turn "$TURN3_PROMPT" "$TURN3_SCHEMA" "$TURN3_RESULT" "$TMP_LOGS/turn-3.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_gate_result "$TURN3_RESULT" "$PROJECT" concept concepts.md
@@ -721,9 +752,11 @@ CONCEPT_HASH="$(combined_sha256 "$PROJECT/concepts.md")"
 
 TURN4_PROMPT="$RUN_ROOT/turn-4.md"
 TURN4_RESULT="$RUN_ROOT/turn-4.json"
+TURN4_SCHEMA="$RUN_ROOT/turn-4.schema.json"
 write_resume_prompt "$TURN4_PROMPT" "$PROJECT" concept "concepts.md（明确选择方案 B：双重轨迹）" "$CONCEPT_HASH" outline outline.md \
   "按已选择的方案 B：双重轨迹写 outline.md，必须逐字记录‘方案 B：双重轨迹’，必须有 ## 体验节点 标题和稳定节点 S01—S05；明确写可见试做、失败、调整、视觉母题变化、环境声和主题恢复，不要写长篇解释性旁白。完成后停止。"
-run_codex_turn "$TURN4_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN4_RESULT" "$TMP_LOGS/turn-4.log"
+write_gate_schema "$TURN4_SCHEMA" outline outline.md
+run_codex_turn "$TURN4_PROMPT" "$TURN4_SCHEMA" "$TURN4_RESULT" "$TMP_LOGS/turn-4.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
@@ -774,9 +807,11 @@ DURATION_RESULT_HASH="$(file_sha256 "$DURATION_RESULT")"
 
 TURN5_PROMPT="$RUN_ROOT/turn-5.md"
 TURN5_RESULT="$RUN_ROOT/turn-5.json"
+TURN5_SCHEMA="$RUN_ROOT/turn-5.schema.json"
 write_resume_prompt "$TURN5_PROMPT" "$PROJECT" outline "outline.md" "$OUTLINE_HASH" script script.md \
   "写同时包含干净表演稿与制作执行稿的 script.md，并包含全部确定性必需标题及旁白克制段。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
-run_codex_turn "$TURN5_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
+write_gate_schema "$TURN5_SCHEMA" script script.md
+run_codex_turn "$TURN5_PROMPT" "$TURN5_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
