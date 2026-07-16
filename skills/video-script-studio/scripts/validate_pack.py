@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import stat
@@ -62,6 +63,13 @@ ROUTE_DIMENSIONS = {
     "narrative": ("character_desire", "conflict_escalation", "scene_function", "subtext", "emotional_payoff"),
     "commercial": ("audience_insight", "single_promise", "proof_strength", "product_integration", "action_drive", "compliance"),
     "visual-essay": ("visible_action", "visual_storytelling", "inner_outer_change", "sound_design", "voiceover_restraint", "aesthetic_consistency"),
+}
+ROUTE_WEIGHTS = {
+    "short-form": dict(zip(ROUTE_DIMENSIONS["short-form"], (25, 20, 20, 15, 20))),
+    "long-form": dict(zip(ROUTE_DIMENSIONS["long-form"], (20, 25, 20, 20, 15))),
+    "narrative": dict(zip(ROUTE_DIMENSIONS["narrative"], (20, 25, 20, 15, 20))),
+    "commercial": dict(zip(ROUTE_DIMENSIONS["commercial"], (15, 20, 20, 15, 15, 15))),
+    "visual-essay": dict(zip(ROUTE_DIMENSIONS["visual-essay"], (20, 20, 15, 15, 15, 15))),
 }
 ROUTE_ANCHORS = {
     "short-form": {"brief.md": ("观看理由",), "outline.md": ("中段推进", "结尾兑现")},
@@ -365,13 +373,18 @@ def _validate_review(text: str | None, route: str | None, problems: _Problems) -
         problems.add("invalid_review_schema")
 
     total = review.get("total_score")
-    if type(total) not in (int, float) or not 0 <= total <= 100:
+    if (
+        type(total) not in (int, float)
+        or not math.isfinite(total)
+        or not 0 <= total <= 100
+    ):
         problems.add("invalid_review_schema")
     elif total < 80:
         problems.add("review_total_below_80")
 
     dimensions = review.get("core_dimensions")
     expected = ROUTE_DIMENSIONS.get(route or "")
+    canonical_weights = ROUTE_WEIGHTS.get(route or "")
     weighted_terms: list[float] = []
     if not isinstance(dimensions, dict):
         problems.add("invalid_review_dimensions")
@@ -379,22 +392,36 @@ def _validate_review(text: str | None, route: str | None, problems: _Problems) -
         if expected is None or set(dimensions) != set(expected):
             problems.add("invalid_review_dimensions")
         weights: list[float] = []
-        for value in dimensions.values():
+        for name, value in dimensions.items():
             if not isinstance(value, dict) or set(value) != {"score", "weight"}:
                 problems.add("invalid_review_schema")
                 continue
             score = value.get("score")
             weight = value.get("weight")
-            if type(score) not in (int, float) or not 0 <= score <= 10:
+            if (
+                type(score) not in (int, float)
+                or not math.isfinite(score)
+                or not 0 <= score <= 10
+            ):
                 problems.add("invalid_review_schema")
             elif score < 7:
                 problems.add("review_core_dimension_below_7")
-            if type(weight) not in (int, float) or weight <= 0:
+            canonical_weight = canonical_weights.get(name) if canonical_weights else None
+            if (
+                type(weight) not in (int, float)
+                or not math.isfinite(weight)
+                or weight <= 0
+                or weight != canonical_weight
+            ):
                 problems.add("invalid_review_weights")
             else:
                 weights.append(weight)
-            if type(score) in (int, float) and type(weight) in (int, float):
-                weighted_terms.append(score * weight / 10)
+            if (
+                type(score) in (int, float)
+                and math.isfinite(score)
+                and canonical_weight is not None
+            ):
+                weighted_terms.append(score * canonical_weight / 10)
         if len(weights) != len(dimensions) or abs(sum(weights) - 100) > 1e-9:
             problems.add("invalid_review_weights")
         elif (

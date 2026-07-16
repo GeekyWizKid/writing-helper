@@ -37,6 +37,13 @@ EXPECTED_GATES = (
     "factual_integrity", "logical_consistency", "brief_alignment", "profile_constraints",
     "duration_feasible", "production_feasible", "risk_disclosure",
 )
+EXPECTED_WEIGHTS = {
+    "short-form": dict(zip(EXPECTED_DIMENSIONS["short-form"], (25, 20, 20, 15, 20))),
+    "long-form": dict(zip(EXPECTED_DIMENSIONS["long-form"], (20, 25, 20, 20, 15))),
+    "narrative": dict(zip(EXPECTED_DIMENSIONS["narrative"], (20, 25, 20, 15, 20))),
+    "commercial": dict(zip(EXPECTED_DIMENSIONS["commercial"], (15, 20, 20, 15, 15, 15))),
+    "visual-essay": dict(zip(EXPECTED_DIMENSIONS["visual-essay"], (20, 20, 15, 15, 15, 15))),
+}
 
 
 class ValidatePackTests(unittest.TestCase):
@@ -89,8 +96,10 @@ class ValidatePackTests(unittest.TestCase):
             "---\n" + json.dumps(manifest, ensure_ascii=False) + "\n---\n\n# Sources\n\n无需外部事实来源。\n",
         )
         dimensions = {
-            name: {"score": 8, "weight": 20}
-            for name in self.validator.ROUTE_DIMENSIONS["short-form"]
+            name: {"score": 8, "weight": weight}
+            for name, weight in zip(
+                EXPECTED_DIMENSIONS["short-form"], EXPECTED_WEIGHTS["short-form"].values()
+            )
         }
         review = {
             "schema_version": 1,
@@ -113,15 +122,11 @@ class ValidatePackTests(unittest.TestCase):
             with (self.project / filename).open("a", encoding="utf-8") as artifact:
                 for heading in headings:
                     artifact.write(f"\n## {heading}\n{heading}已经形成可执行且经过确认的内容。\n")
-        weights = [100 // len(self.validator.ROUTE_DIMENSIONS[route])] * len(
-            self.validator.ROUTE_DIMENSIONS[route]
-        )
-        weights[-1] += 100 - sum(weights)
         review_path = self.project / "review.md"
         review = json.loads(review_path.read_text(encoding="utf-8").split("---")[1])
         review["core_dimensions"] = {
             name: {"score": 8, "weight": weight}
-            for name, weight in zip(self.validator.ROUTE_DIMENSIONS[route], weights)
+            for name, weight in EXPECTED_WEIGHTS[route].items()
         }
         review_path.write_text(
             "---\n" + json.dumps(review, ensure_ascii=False) + "\n---\n\n# Review\n\n质量复核完整。\n"
@@ -133,6 +138,7 @@ class ValidatePackTests(unittest.TestCase):
     def test_valid_pack_has_exact_deterministic_result(self) -> None:
         self.assertEqual(EXPECTED_DIMENSIONS, self.validator.ROUTE_DIMENSIONS)
         self.assertEqual(EXPECTED_GATES, self.validator.BASE_GATES)
+        self.assertEqual(EXPECTED_WEIGHTS, self.validator.ROUTE_WEIGHTS)
         expected = {
             "valid": True,
             "errors": [],
@@ -246,7 +252,7 @@ class ValidatePackTests(unittest.TestCase):
         review["core_dimensions"][dimension]["score"] = 7
         for name in review["core_dimensions"]:
             if name != dimension:
-                review["core_dimensions"][name]["score"] = 8.25
+                review["core_dimensions"][name]["score"] = 25 / 3
         review["total_score"] = 80
         path.write_text("---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n", encoding="utf-8")
         self.assertTrue(self.validator.validate_pack(self.project)["valid"])
@@ -263,6 +269,29 @@ class ValidatePackTests(unittest.TestCase):
         review["total_score"] = 81
         path.write_text("---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n", encoding="utf-8")
         self.assertIn("review_total_mismatch", self.validator.validate_pack(self.project)["error_codes"])
+
+    def test_route_weights_are_canonical_and_cannot_be_manipulated(self) -> None:
+        path = self.project / "review.md"
+        review = json.loads(path.read_text(encoding="utf-8").split("---")[1])
+        scores = (7, 10, 7, 7, 7)
+        manipulated_weights = (1, 96, 1, 1, 1)
+        for dimension, score, weight in zip(
+            EXPECTED_DIMENSIONS["short-form"], scores, manipulated_weights
+        ):
+            review["core_dimensions"][dimension] = {"score": score, "weight": weight}
+        review["total_score"] = 98.8
+        path.write_text("---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n", encoding="utf-8")
+        result = self.validator.validate_pack(self.project)
+        self.assertFalse(result["valid"])
+        self.assertIn("invalid_review_weights", result["error_codes"])
+
+    def test_boolean_canonical_looking_weight_is_invalid(self) -> None:
+        path = self.project / "review.md"
+        review = json.loads(path.read_text(encoding="utf-8").split("---")[1])
+        dimension = next(iter(review["core_dimensions"]))
+        review["core_dimensions"][dimension]["weight"] = True
+        path.write_text("---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n", encoding="utf-8")
+        self.assertIn("invalid_review_weights", self.validator.validate_pack(self.project)["error_codes"])
 
     def test_review_object_order_is_irrelevant_but_zero_weight_is_invalid(self) -> None:
         path = self.project / "review.md"
