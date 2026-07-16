@@ -8,9 +8,11 @@ input and emits validation failures with exit status 0.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import sys
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -19,12 +21,14 @@ from urllib.parse import urlparse
 
 SOURCE_LEVELS = ("primary", "authoritative-secondary", "expert", "community")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
+CLAIM_TYPES = ("factual", "analysis", "opinion", "audience-language", "anecdote")
 CAPTURE_STATUSES = ("complete", "partial", "unavailable")
 BODY_STATUSES = ("full-text", "search-snippet", "metadata-only", "unavailable")
+MAX_INPUT_BYTES = 10 * 1024 * 1024
 
-_CLAIM_ID = re.compile(r"^C\d{2}$")
-_SOURCE_ID = re.compile(r"^S\d{2}$")
-_SCRIPT_MARKER = re.compile(r"\[(C\d+)\]")
+_CLAIM_ID = re.compile(r"^C[0-9]{2}$")
+_SOURCE_ID = re.compile(r"^S[0-9]{2}$")
+_SCRIPT_MARKER = re.compile(r"\[(C[^\[\]]*)\]")
 _COMMUNITY_ONLY_ALLOWED_TYPES = ("audience-language", "anecdote")
 _REQUIRED_MANIFEST_FIELDS = (
     "schema_version",
@@ -57,7 +61,7 @@ _ERROR_MESSAGES = {
     "missing_source_field": "A source is missing a required field.",
     "invalid_source_id": "A source ID must use the S01 form.",
     "duplicate_source_id": "Source IDs must be unique.",
-    "invalid_source_provenance": "A source requires exactly one HTTP(S) URL or file path.",
+    "invalid_source_provenance": "A source requires exactly one safe HTTP(S) URL or file path.",
     "invalid_source_level": "A source has an unsupported evidence level.",
     "invalid_capture_status": "A source has an unsupported capture status.",
     "invalid_body_status": "A source has an unsupported body status.",
@@ -67,11 +71,12 @@ _ERROR_MESSAGES = {
     "invalid_claim_id": "A claim ID must use the C01 form.",
     "duplicate_claim_id": "Claim IDs must be unique.",
     "invalid_claim": "A claim contains an invalid field value.",
+    "invalid_claim_type": "A claim has an unsupported claim type.",
     "invalid_confidence": "A claim has an unsupported confidence value.",
     "duplicate_source_reference": "A claim cannot reference the same source more than once.",
     "unknown_source_reference": "A claim references a source that is not in the manifest.",
     "incomplete_claim_support": "A factual claim requires at least one complete full-text source.",
-    "community_only_factual_claim": "A factual claim cannot rely only on community sources.",
+    "community_only_unsupported_claim": "This claim type cannot rely only on community sources.",
     "unresolved_script_marker": "The script contains a claim marker absent from the manifest.",
     "claim_missing_from_script": "A manifest claim is not referenced by the script.",
     "duplicate_script_marker": "A script claim marker may appear only once.",
@@ -98,19 +103,63 @@ def _nonempty_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _has_control_character(value: str) -> bool:
+    return any(unicodedata.category(character) == "Cc" for character in value)
+
+
+def _valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", hostname):
+        return False
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+    except UnicodeError:
+        return False
+    if not ascii_hostname or len(ascii_hostname) > 253:
+        return False
+    labels = ascii_hostname.split(".")
+    return all(
+        1 <= len(label) <= 63
+        and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+        for label in labels
+    )
+
+
 def _valid_provenance(value: Any) -> bool:
     if not isinstance(value, dict) or set(value) not in ({"url"}, {"file"}):
         return False
     if "file" in value:
-        return _nonempty_text(value["file"])
+        file_value = value["file"]
+        if not _nonempty_text(file_value) or _has_control_character(file_value):
+            return False
+        try:
+            Path(file_value)
+        except (OSError, TypeError, ValueError):
+            return False
+        # Provenance can describe a file that will be captured later; existence is not required.
+        return True
     url = value.get("url")
-    if not _nonempty_text(url):
+    if not _nonempty_text(url) or any(character.isspace() for character in url):
+        return False
+    if _has_control_character(url):
         return False
     try:
         parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
     except ValueError:
         return False
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and hostname is not None
+        and _valid_hostname(hostname)
+        and (port is None or 0 <= port <= 65535)
+    )
 
 
 def _valid_date(value: Any) -> bool:
@@ -167,6 +216,8 @@ def _validate_claim(claim: Any, problems: _Problems) -> tuple[str | None, dict |
         problems.add("invalid_claim_id")
     if not _nonempty_text(claim.get("text")) or not _nonempty_text(claim.get("claim_type")):
         problems.add("invalid_claim")
+    if claim.get("claim_type") not in CLAIM_TYPES:
+        problems.add("invalid_claim_type")
     if claim.get("confidence") not in CONFIDENCE_LEVELS:
         problems.add("invalid_confidence")
     source_ids = claim.get("source_ids")
@@ -261,7 +312,7 @@ def validate(manifest: dict, script_text: str = "") -> dict:
             and referenced
             and all(source.get("level") == "community" for source in referenced)
         ):
-            problems.add("community_only_factual_claim")
+            problems.add("community_only_unsupported_claim")
 
     markers = _SCRIPT_MARKER.findall(script_text)
     exact_markers = [marker for marker in markers if _CLAIM_ID.fullmatch(marker)]
@@ -289,6 +340,15 @@ def _invalid_input() -> int:
     return 2
 
 
+def _read_input_text(path: Path) -> str:
+    """Read at most ``MAX_INPUT_BYTES`` of UTF-8 text from an input file."""
+    with path.open("rb") as stream:
+        content = stream.read(MAX_INPUT_BYTES + 1)
+    if len(content) > MAX_INPUT_BYTES:
+        raise ValueError("input is too large")
+    return content.decode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
@@ -300,11 +360,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         manifest = json.loads(
-            args.manifest.read_text(encoding="utf-8"), parse_constant=reject_non_finite
+            _read_input_text(args.manifest), parse_constant=reject_non_finite
         )
         if not isinstance(manifest, dict):
             return _invalid_input()
-        script_text = args.script.read_text(encoding="utf-8") if args.script else ""
+        script_text = _read_input_text(args.script) if args.script else ""
     except (OSError, UnicodeError, ValueError):
         return _invalid_input()
 

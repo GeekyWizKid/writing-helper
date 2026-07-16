@@ -67,6 +67,10 @@ class ValidateSourcesTests(unittest.TestCase):
             ("primary", "authoritative-secondary", "expert", "community"),
         )
         self.assertEqual(validate_sources.CONFIDENCE_LEVELS, ("high", "medium", "low"))
+        self.assertEqual(
+            validate_sources.CLAIM_TYPES,
+            ("factual", "analysis", "opinion", "audience-language", "anecdote"),
+        )
 
     def test_rejects_non_object_manifest_and_wrong_top_level_shapes(self):
         for manifest in (None, [], "manifest", {"schema_version": 1}):
@@ -97,6 +101,18 @@ class ValidateSourcesTests(unittest.TestCase):
                 self.assertIn(
                     "invalid_claim_id", validate(manifest, "")["error_codes"]
                 )
+
+    def test_rejects_non_ascii_source_claim_and_script_marker_digits(self):
+        manifest = valid_manifest()
+        manifest["sources"][0]["id"] = "S０１"
+        manifest["claims"][0]["claim_id"] = "C０１"
+        manifest["claims"][0]["source_ids"] = ["S０１"]
+
+        result = validate(manifest, "Claim [C０１]")
+
+        self.assertIn("invalid_source_id", result["error_codes"])
+        self.assertIn("invalid_claim_id", result["error_codes"])
+        self.assertIn("unresolved_script_marker", result["error_codes"])
 
     def test_requires_complete_source_fields_and_valid_enums(self):
         required = (
@@ -148,6 +164,56 @@ class ValidateSourcesTests(unittest.TestCase):
         manifest["sources"][0]["provenance"] = {"file": "research/report.pdf"}
         self.assertTrue(validate(manifest, "[C01]")["valid"])
 
+    def test_rejects_unsafe_or_malformed_url_provenance(self):
+        invalid_urls = (
+            " https://example.com",
+            "https://example.com/path\nnext",
+            "https://exa mple.com",
+            "https://bad_host.example",
+            "https://example..com",
+            "https://999.999.999.999/path",
+            "https:///missing-host",
+            "https://user@:443/path",
+            "https://example.com:not-a-port/path",
+            "https://example.com:70000/path",
+            "https://[::1/path",
+        )
+        for url in invalid_urls:
+            manifest = valid_manifest()
+            manifest["sources"][0]["provenance"] = {"url": url}
+            with self.subTest(url=url):
+                self.assertIn(
+                    "invalid_source_provenance",
+                    validate(manifest, "[C01]")["error_codes"],
+                )
+
+    def test_file_provenance_is_safe_but_does_not_need_to_exist(self):
+        invalid_files = (
+            "",
+            "   ",
+            "bad\x00path",
+            "bad\npath",
+            "bad\x1fpath",
+            "bad\x7fpath",
+            "bad\x85path",
+            None,
+            ["file"],
+        )
+        for file_value in invalid_files:
+            manifest = valid_manifest()
+            manifest["sources"][0]["provenance"] = {"file": file_value}
+            with self.subTest(file_value=file_value):
+                self.assertIn(
+                    "invalid_source_provenance",
+                    validate(manifest, "[C01]")["error_codes"],
+                )
+
+        manifest = valid_manifest()
+        manifest["sources"][0]["provenance"] = {
+            "file": "research/this-file-does-not-need-to-exist.pdf"
+        }
+        self.assertTrue(validate(manifest, "[C01]")["valid"])
+
     def test_requires_real_iso_calendar_date(self):
         for date in ("2026-02-30", "2026/07/17", "", True, 20260717):
             manifest = valid_manifest()
@@ -183,6 +249,23 @@ class ValidateSourcesTests(unittest.TestCase):
                     validate(manifest, "[C01]")["error_codes"],
                 )
 
+    def test_rejects_unknown_claim_type_before_it_can_bypass_completeness(self):
+        manifest = valid_manifest()
+        manifest["claims"][0]["claim_type"] = "factuaI"
+        manifest["sources"][0]["capture_status"] = "partial"
+
+        result = validate(manifest, "[C01]")
+
+        self.assertIn("invalid_claim_type", result["error_codes"])
+
+    def test_nonfactual_supported_claims_do_not_require_complete_sources(self):
+        for claim_type in ("analysis", "opinion"):
+            manifest = valid_manifest()
+            manifest["claims"][0]["claim_type"] = claim_type
+            manifest["sources"][0]["capture_status"] = "partial"
+            with self.subTest(claim_type=claim_type):
+                self.assertTrue(validate(manifest, "[C01]")["valid"])
+
     def test_rejects_search_snippet_as_complete_source(self):
         manifest = valid_manifest()
         manifest["sources"][0]["body_status"] = "search-snippet"
@@ -195,16 +278,19 @@ class ValidateSourcesTests(unittest.TestCase):
     def test_rejects_community_only_factual_claim_support(self):
         manifest = valid_manifest()
         manifest["sources"][0]["level"] = "community"
-        self.assertIn("community_only_factual_claim", validate(manifest, "[C01]")["error_codes"])
+        self.assertIn(
+            "community_only_unsupported_claim",
+            validate(manifest, "[C01]")["error_codes"],
+        )
 
     def test_rejects_community_only_support_for_every_non_exempt_claim_type(self):
-        for claim_type in ("analysis", "opinion", "unknown"):
+        for claim_type in ("factual", "analysis", "opinion"):
             manifest = valid_manifest()
             manifest["sources"][0]["level"] = "community"
             manifest["claims"][0]["claim_type"] = claim_type
             with self.subTest(claim_type=claim_type):
                 self.assertIn(
-                    "community_only_factual_claim",
+                    "community_only_unsupported_claim",
                     validate(manifest, "[C01]")["error_codes"],
                 )
 
@@ -285,6 +371,45 @@ class ValidateSourcesCliTests(unittest.TestCase):
                 payload = json.loads(completed.stdout)
                 self.assertEqual(payload, {"valid": False, "error": "invalid_input"})
                 self.assertEqual(completed.stderr, "")
+
+    def test_cli_rejects_manifest_or_script_larger_than_input_limit(self):
+        for oversized_argument in ("--manifest", "--script"):
+            with self.subTest(oversized_argument=oversized_argument):
+                with tempfile.TemporaryDirectory() as directory:
+                    manifest_path = Path(directory) / "manifest.json"
+                    script_path = Path(directory) / "script.md"
+                    manifest_path.write_text(json.dumps(valid_manifest()), encoding="utf-8")
+                    script_path.write_text("Claim [C01]", encoding="utf-8")
+                    oversized_path = (
+                        manifest_path if oversized_argument == "--manifest" else script_path
+                    )
+                    if oversized_argument == "--manifest":
+                        with oversized_path.open("ab") as oversized:
+                            for _ in range(11):
+                                oversized.write(b" " * (1024 * 1024))
+                    else:
+                        with oversized_path.open("wb") as oversized:
+                            oversized.seek(10 * 1024 * 1024)
+                            oversized.write(b"x")
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(self.script),
+                            "--manifest",
+                            str(manifest_path),
+                            "--script",
+                            str(script_path),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(completed.returncode, 2)
+                    self.assertEqual(
+                        json.loads(completed.stdout),
+                        {"valid": False, "error": "invalid_input"},
+                    )
+                    self.assertEqual(completed.stderr, "")
 
 
 if __name__ == "__main__":
