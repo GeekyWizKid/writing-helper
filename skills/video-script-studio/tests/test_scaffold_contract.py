@@ -40,6 +40,157 @@ class ScaffoldContractTests(unittest.TestCase):
                 f"placeholder found in {relative_path}",
             )
 
+    def test_skill_frontmatter_is_trigger_only_and_skill_is_compact(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(content.splitlines()), 350)
+        match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
+        self.assertIsNotNone(match)
+        frontmatter = match.group(1) if match else ""
+        description = re.search(r"(?m)^description: (.+)$", frontmatter)
+        self.assertIsNotNone(description)
+        value = description.group(1) if description else ""
+        self.assertTrue(value.startswith("Use when"))
+        for literal in (
+            "create/新建",
+            "resume/继续",
+            "revise/修改",
+            "quality-check/质检",
+            "video-script projects",
+        ):
+            self.assertIn(literal, value)
+        for forbidden in ("workflow", "staged", "through", "first", "then"):
+            self.assertNotIn(forbidden, value.lower())
+
+    def test_router_has_exact_order_and_explicit_gates(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        ordered = (
+            "detect new/resume",
+            "initialize/load project",
+            "load profile",
+            "diagnose route",
+            "confirm brief",
+            "decide/research",
+            "confirm research",
+            "propose 3 concepts",
+            "confirm concept",
+            "build experience-node outline",
+            "confirm outline",
+            "write clean+execution script",
+            "estimate duration",
+            "confirm script",
+            "storyboard/assets/publish",
+            "independent review",
+            "max two revisions",
+            "deterministic validation",
+            "complete",
+        )
+        positions = [content.find(item) for item in ordered]
+        self.assertTrue(all(position >= 0 for position in positions), positions)
+        self.assertEqual(positions, sorted(positions))
+        for literal in (
+            "Ask exactly one diagnosis question per turn",
+            "Silence is never approval",
+            "brief, research, concept, outline, and script",
+            "explicit approval",
+        ):
+            self.assertIn(literal, content)
+
+    def test_resume_and_revision_are_state_first_and_invalidate_downstream(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        for literal in (
+            "On resume, run status before reading or generating artifacts",
+            "Treat `project.yaml` and command output as authoritative",
+            "read needed current artifacts and relevant `history/` entries",
+            "even when the user asks to skip dependency verification",
+            "reopen the earliest affected approved stage",
+            "invalidates downstream approvals",
+            "history/",
+            "Never overwrite an approved upstream decision in place",
+        ):
+            self.assertIn(literal, content)
+        self.assertNotIn("`.project.yaml`", content)
+
+    def test_progressive_loading_names_every_reference_and_exactly_one_route(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        references = (
+            "references/discovery.md",
+            "references/tool-routing.md",
+            "references/research.md",
+            "references/short-form.md",
+            "references/long-form.md",
+            "references/narrative.md",
+            "references/commercial.md",
+            "references/visual-essay.md",
+            "references/storyboard.md",
+            "references/publishing.md",
+            "references/quality-rubric.md",
+        )
+        for relative_path in references:
+            self.assertIn(relative_path, content)
+            self.assertTrue((SKILL_ROOT / relative_path).is_file(), relative_path)
+        for literal in (
+            "Load exactly one route reference",
+            "Do not load the other four route references",
+            "Progressive loading",
+        ):
+            self.assertIn(literal, content)
+
+    def test_external_capabilities_have_explicit_failure_contracts(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        for literal in (
+            "POSIX Darwin or Linux",
+            "Detect external capability availability before calling it",
+            "Never fabricate a tool result, source, transcript, or successful fallback",
+            "Search snippets are incomplete evidence",
+            "Report a missing transcript explicitly",
+            "stop and ask whether to continue with existing material",
+            "No silent degradation",
+            "Do not update a profile implicitly",
+            "以后都这样",
+            "explicit confirmation",
+        ):
+            self.assertIn(literal, content)
+
+    def test_skill_documents_exact_deterministic_commands(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        commands = (
+            "python3 scripts/init_project.py --root",
+            "python3 scripts/state_manager.py status --project",
+            "python3 scripts/state_manager.py approve --project",
+            "python3 scripts/state_manager.py reopen --project",
+            "python3 scripts/state_manager.py complete --project",
+            "python3 scripts/profile_manager.py --root",
+            "python3 scripts/estimate_duration.py --input",
+            "python3 scripts/validate_pack.py --project",
+        )
+        for command in commands:
+            self.assertIn(command, content)
+        self.assertIn("validate_sources.py accepts an extracted JSON manifest", content)
+        self.assertIn("does not read sources.md frontmatter", content)
+
+    def test_completion_response_contract_is_explicit(self) -> None:
+        content = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        for literal in (
+            "Completion response",
+            "project path",
+            "final stage",
+            "validation result",
+            "saved artifact inventory",
+            "unresolved warnings",
+            "next permitted action",
+        ):
+            self.assertIn(literal, content)
+
+    def test_openai_metadata_has_exact_approved_interface(self) -> None:
+        content = (SKILL_ROOT / "agents/openai.yaml").read_text(encoding="utf-8")
+        self.assertEqual(
+            'interface:\n'
+            '  display_name: "Video Script Studio"\n'
+            '  short_description: "分阶段创作可拍摄的视频脚本与完整制作包"\n'
+            '  default_prompt: "使用 $video-script-studio 从需求诊断开始创建一个可恢复的视频脚本项目。"\n',
+            content,
+        )
+
 
 class CommonContractTests(unittest.TestCase):
     @classmethod
