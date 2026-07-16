@@ -287,6 +287,9 @@ def load_state(project: Path) -> dict[str, Any]:
 
 def save_state(project: Path, state: dict[str, Any]) -> None:
     """Validate and atomically replace a project's state document."""
+    # Reject an unknown or oversized shape before recursively copying caller
+    # input; validated state contains only the bounded scalar schema above.
+    _validate_state(state)
     with _locked_project(project) as (_, project_fd):
         _save_state_at(project_fd, copy.deepcopy(state))
 
