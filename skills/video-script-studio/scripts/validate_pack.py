@@ -172,6 +172,10 @@ def _strict_json(text: str) -> Any:
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
 
 
+def _finite_number(value: Any) -> bool:
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
 def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
@@ -271,7 +275,8 @@ def _snapshot_files_at(
     *,
     state_already_read: bool = False,
     initial_byte_count: int = 0,
-) -> tuple[dict[str, str], int, int]:
+    initial_state_digest: str | None = None,
+) -> tuple[dict[str, str], int, int, tuple[str, ...], tuple[tuple[str, str], ...]]:
     try:
         names = set(os.listdir(project_fd))
     except OSError as exc:
@@ -291,6 +296,11 @@ def _snapshot_files_at(
 
     files: dict[str, str] = {}
     total = initial_byte_count
+    fingerprints: list[tuple[str, str]] = []
+    if state_already_read:
+        if not isinstance(initial_state_digest, str):
+            raise StudioError("The preloaded project state fingerprint is missing.")
+        fingerprints.append(("project.yaml", initial_state_digest))
     names_to_read = ARTIFACT_FILES if state_already_read else REQUIRED_FILES
     for name in names_to_read:
         if name not in names:
@@ -300,16 +310,23 @@ def _snapshot_files_at(
         total += len(raw)
         if total > MAX_PACK_BYTES:
             raise StudioError("The production pack exceeds the aggregate size limit.")
+        fingerprints.append((name, hashlib.sha256(raw).hexdigest()))
         try:
             files[name] = raw.decode("utf-8")
         except UnicodeError as exc:
             raise StudioError(f"The {name} file is not valid UTF-8.") from exc
-    return files, len(files) + (1 if state_already_read else 0), total
+    return (
+        files,
+        len(files) + (1 if state_already_read else 0),
+        total,
+        tuple(sorted(names)),
+        tuple(fingerprints),
+    )
 
 
 def _validate_history_at(
     project_fd: int, problems: _Problems, *, byte_budget: int
-) -> None:
+) -> tuple[Any, ...]:
     try:
         history_fd = _open_history(project_fd)
     except StudioError:
@@ -318,8 +335,9 @@ def _validate_history_at(
         try:
             os.stat("history", dir_fd=project_fd, follow_symlinks=False)
         except FileNotFoundError:
-            return
+            return ()
         raise
+    history_fingerprints: list[Any] = []
     try:
         history_names = sorted(
             _bounded_directory_names(
@@ -337,7 +355,11 @@ def _validate_history_at(
             if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
                 raise StudioError("The project history contains an unsafe entry.")
             if _QUARANTINE_PATTERN.fullmatch(name):
-                _verify_empty_tombstone_at(history_fd, name)
+                identity = _verify_empty_tombstone_at(history_fd, name)
+                if identity is not None:
+                    history_fingerprints.append(
+                        (name, "tombstone", identity[0], identity[1])
+                    )
                 continue
             if not _SNAPSHOT_PATTERN.fullmatch(name):
                 problems.add("invalid_history_entry")
@@ -403,6 +425,7 @@ def _validate_history_at(
                 if not set(affected) <= allowed_artifacts:
                     problems.add("invalid_history_snapshot")
                     continue
+                children = [("manifest.json", hashlib.sha256(raw).hexdigest())]
                 for artifact in affected:
                     archived = _read_regular_at(
                         descriptor, artifact, MAX_FILE_BYTES, "history artifact"
@@ -412,6 +435,15 @@ def _validate_history_at(
                         raise StudioError(
                             "The project and history exceed the aggregate size limit."
                         )
+                    children.append((artifact, hashlib.sha256(archived).hexdigest()))
+                history_fingerprints.append(
+                    (
+                        name,
+                        metadata.st_dev,
+                        metadata.st_ino,
+                        tuple(sorted(children)),
+                    )
+                )
             except StudioError:
                 raise
             except OSError as exc:
@@ -421,6 +453,7 @@ def _validate_history_at(
                     os.close(descriptor)
     finally:
         os.close(history_fd)
+    return tuple(history_fingerprints)
 
 
 def _validate_artifacts(files: dict[str, str], problems: _Problems) -> None:
@@ -478,11 +511,8 @@ def _validate_review(text: str | None, route: str | None, problems: _Problems) -
         problems.add("invalid_review_schema")
 
     total = review.get("total_score")
-    if (
-        type(total) not in (int, float)
-        or not math.isfinite(total)
-        or not 0 <= total <= 100
-    ):
+    total_valid = _finite_number(total) and 0 <= total <= 100
+    if not total_valid:
         problems.add("invalid_review_schema")
     elif total < 80:
         problems.add("review_total_below_80")
@@ -503,18 +533,14 @@ def _validate_review(text: str | None, route: str | None, problems: _Problems) -
                 continue
             score = value.get("score")
             weight = value.get("weight")
-            if (
-                type(score) not in (int, float)
-                or not math.isfinite(score)
-                or not 0 <= score <= 10
-            ):
+            score_valid = _finite_number(score) and 0 <= score <= 10
+            if not score_valid:
                 problems.add("invalid_review_schema")
             elif score < 7:
                 problems.add("review_core_dimension_below_7")
             canonical_weight = canonical_weights.get(name) if canonical_weights else None
             if (
-                type(weight) not in (int, float)
-                or not math.isfinite(weight)
+                not _finite_number(weight)
                 or weight <= 0
                 or weight != canonical_weight
             ):
@@ -522,15 +548,14 @@ def _validate_review(text: str | None, route: str | None, problems: _Problems) -
             else:
                 weights.append(weight)
             if (
-                type(score) in (int, float)
-                and math.isfinite(score)
+                score_valid
                 and canonical_weight is not None
             ):
                 weighted_terms.append(score * canonical_weight / 10)
         if len(weights) != len(dimensions) or abs(sum(weights) - 100) > 1e-9:
             problems.add("invalid_review_weights")
         elif (
-            type(total) in (int, float)
+            total_valid
             and len(weighted_terms) == len(dimensions)
             and abs(sum(weighted_terms) - total) > 0.01
         ):
@@ -648,16 +673,19 @@ def _validate_pack_at(
     *,
     state: dict[str, Any] | None = None,
     state_byte_count: int = 0,
-) -> dict[str, Any]:
+    state_digest: str | None = None,
+    capture_fingerprint: bool = False,
+) -> Any:
     """Validate while the caller holds the trusted project lock."""
     problems = _Problems()
-    files, checked, pack_bytes = _snapshot_files_at(
+    files, checked, pack_bytes, top_level, file_fingerprints = _snapshot_files_at(
         project_fd,
         problems,
         state_already_read=state is not None,
         initial_byte_count=state_byte_count,
+        initial_state_digest=state_digest,
     )
-    _validate_history_at(
+    history_fingerprint = _validate_history_at(
         project_fd, problems, byte_budget=MAX_PACK_BYTES - pack_bytes
     )
 
@@ -696,6 +724,12 @@ def _validate_pack_at(
         "source_count": source_count,
         "claim_count": claim_count,
     }
+    if capture_fingerprint:
+        return result, (
+            (top_level, file_fingerprints, history_fingerprint)
+            if result["valid"]
+            else None
+        )
     return result
 
 

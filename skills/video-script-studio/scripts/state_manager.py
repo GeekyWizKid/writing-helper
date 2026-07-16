@@ -6,6 +6,7 @@ import argparse
 import copy
 import ctypes
 import errno
+import hashlib
 import json
 import os
 import re
@@ -255,13 +256,13 @@ def _read_regular_at(directory_fd: int, name: str, limit: int, label: str) -> by
             os.close(descriptor)
 
 
-def _load_state_with_size_at(project_fd: int) -> tuple[dict[str, Any], int]:
+def _load_state_with_size_at(project_fd: int) -> tuple[dict[str, Any], int, str]:
     raw = _read_regular_at(project_fd, "project.yaml", MAX_STATE_BYTES, "project state")
     try:
         state = parse_state_yaml(raw.decode("utf-8"))
     except (UnicodeError, StudioError) as exc:
         raise StudioError("The project state file is invalid.") from exc
-    return _validate_state(state), len(raw)
+    return _validate_state(state), len(raw), hashlib.sha256(raw).hexdigest()
 
 
 def _load_state_at(project_fd: int) -> dict[str, Any]:
@@ -490,10 +491,12 @@ def _delete_quarantined_directory_at(
             os.close(descriptor)
 
 
-def _verify_empty_tombstone_at(parent_fd: int, name: str) -> None:
+def _verify_empty_tombstone_at(
+    parent_fd: int, name: str
+) -> tuple[int, int] | None:
     identity = _snapshot_identity_at(parent_fd, name)
     if identity is None:
-        return
+        return None
     descriptor: int | None = None
     try:
         descriptor = os.open(
@@ -513,6 +516,7 @@ def _verify_empty_tombstone_at(parent_fd: int, name: str) -> None:
             or os.listdir(descriptor)
         ):
             raise StudioError("A transaction tombstone is unsafe or nonempty.")
+        return identity
     except StudioError:
         raise
     except OSError as exc:
@@ -984,13 +988,15 @@ def complete(project: Path) -> dict[str, Any]:
         from validate_pack import _pack_fingerprint_at, _validate_pack_at
 
         fingerprint = _pack_fingerprint_at(project_fd)
-        state, state_byte_count = _load_state_with_size_at(project_fd)
+        state, state_byte_count, state_digest = _load_state_with_size_at(project_fd)
         if state["stage"] == "complete":
             return {"stage": "complete", "status": "already_complete"}
-        validation = _validate_pack_at(
+        validation, validated_fingerprint = _validate_pack_at(
             project_fd,
             state=state,
             state_byte_count=state_byte_count,
+            state_digest=state_digest,
+            capture_fingerprint=True,
         )
         if not validation["valid"]:
             return {
@@ -1004,7 +1010,11 @@ def complete(project: Path) -> dict[str, Any]:
         # The lock is advisory. Cooperative writers serialize with us; this
         # last-moment fingerprint check also detects ordinary non-cooperative
         # changes in the validation-to-publication window.
-        if fingerprint != _pack_fingerprint_at(project_fd):
+        current_fingerprint = _pack_fingerprint_at(project_fd)
+        if (
+            fingerprint != current_fingerprint
+            or validated_fingerprint != current_fingerprint
+        ):
             changed = copy.deepcopy(validation)
             changed["valid"] = False
             changed["error_codes"].append("pack_changed_during_completion")

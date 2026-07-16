@@ -323,6 +323,31 @@ class ValidatePackTests(unittest.TestCase):
         path.write_text("---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n", encoding="utf-8")
         self.assertIn("invalid_review_weights", self.validator.validate_pack(self.project)["error_codes"])
 
+    def test_huge_json_integers_are_deterministic_content_errors(self) -> None:
+        huge = 10**1000
+        cases = (
+            ("total", "invalid_review_schema"),
+            ("score", "invalid_review_schema"),
+            ("weight", "invalid_review_weights"),
+        )
+        for field, expected_code in cases:
+            with self.subTest(field=field):
+                self.make_valid()
+                path = self.project / "review.md"
+                review = json.loads(path.read_text(encoding="utf-8").split("---")[1])
+                dimension = next(iter(review["core_dimensions"]))
+                if field == "total":
+                    review["total_score"] = huge
+                else:
+                    review["core_dimensions"][dimension][field] = huge
+                path.write_text(
+                    "---\n" + json.dumps(review) + "\n---\n# Review\n完整复核。\n",
+                    encoding="utf-8",
+                )
+                result = self.validator.validate_pack(self.project)
+                self.assertFalse(result["valid"])
+                self.assertIn(expected_code, result["error_codes"])
+
     def test_review_object_order_is_irrelevant_but_zero_weight_is_invalid(self) -> None:
         path = self.project / "review.md"
         review = json.loads(path.read_text(encoding="utf-8").split("---")[1])
@@ -563,6 +588,39 @@ class ValidatePackTests(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
         self.assertEqual(before, (self.project / "project.yaml").read_bytes())
+
+    def test_completion_rejects_aba_restore_of_prevalidation_invalid_content(self) -> None:
+        invalid_a = "# Publish\n\nTODO\n"
+        valid_b = "# Publish\n\n验证期间临时出现的完整有效发布内容。\n"
+        self.write("publish.md", invalid_a)
+        state_before = (self.project / "project.yaml").read_bytes()
+        real_load = self.state._load_state_with_size_at
+
+        def swap_to_valid_during_state_load(project_fd: int):
+            loaded = real_load(project_fd)
+            self.write("publish.md", valid_b)
+            return loaded
+
+        def restore_invalid_at_boundary(name: str) -> None:
+            if name == "validated":
+                self.write("publish.md", invalid_a)
+
+        with (
+            mock.patch.object(
+                self.state,
+                "_load_state_with_size_at",
+                side_effect=swap_to_valid_during_state_load,
+            ),
+            mock.patch.object(
+                self.state,
+                "_completion_boundary",
+                side_effect=restore_invalid_at_boundary,
+            ),
+        ):
+            result = self.state.complete(self.project)
+        self.assertEqual("blocked", result["status"])
+        self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
+        self.assertEqual(state_before, (self.project / "project.yaml").read_bytes())
 
     def test_failed_completion_does_not_change_published_state_bytes(self) -> None:
         self.write("publish.md", "# Publish\n\nTBD\n")
