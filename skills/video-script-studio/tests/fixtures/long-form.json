@@ -1,0 +1,32 @@
+{
+  "intent": "解释 AI 搜索为什么在演示中惊艳、在日常任务中却常被放弃。",
+  "expected_primary_route": "long-form",
+  "expected_secondary_type": "案例叙事",
+  "research_disposition": {
+    "required": true,
+    "reason": "核心问题包含可核验的产品与用户行为事实。"
+  },
+  "artifact_headings": {
+    "brief.md": ["核心问题"],
+    "outline.md": ["子问题链", "章节回报"]
+  },
+  "artifact_bodies": {
+    "brief.md": {"核心问题": "为什么相同的 AI 搜索能力在演示里令人惊艳，在真实任务中却因信任成本被放弃？"},
+    "outline.md": {"子问题链": "先界定演示成功，再追踪真实任务失败，区分速度、准确性与信任，最后给出适用边界。", "章节回报": "每章分别改变观众对演示、任务完成、证据强度和适用条件的理解。"}
+  },
+  "duration_payload": {
+    "primary_type": "long-form",
+    "english_words_per_minute": 60,
+    "segments": [{"text": "trust changes daily use", "pause_seconds": 2}]
+  },
+  "expected_duration": {"estimated_seconds": 6, "segment_count": 1, "diagnostics": []},
+  "review_weights": {
+    "research_depth": 20,
+    "question_chain": 25,
+    "chapter_value": 20,
+    "evidence_opinion_separation": 20,
+    "long_range_retention": 15
+  },
+  "forbidden_failure_pattern": "按来源堆砌章节",
+  "negative_mutation": {"file": "outline.md", "heading": "子问题链", "expected_error": "missing_route_anchor"}
+}

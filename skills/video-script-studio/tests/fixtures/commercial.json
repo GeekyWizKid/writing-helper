@@ -1,0 +1,36 @@
+{
+  "intent": "用真实操作证明访谈工具能生成带时间码的大纲，并邀请用户上传自己的样本。",
+  "expected_primary_route": "commercial",
+  "expected_secondary_type": "原生演示",
+  "research_disposition": {
+    "required": true,
+    "reason": "产品能力与样本结果必须由完整证据支持。"
+  },
+  "artifact_headings": {
+    "brief.md": ["唯一核心承诺"],
+    "research.md": ["证据"],
+    "review.md": ["合规"]
+  },
+  "artifact_bodies": {
+    "brief.md": {"唯一核心承诺": "把一段访谈整理成可点击时间码的编辑大纲，承诺只覆盖本次真实样本。"},
+    "research.md": {"证据": "完整录屏来源 S01 展示导入、生成和点击时间码返回原音频，限定语不外推所有文件。"},
+    "review.md": {"合规": "CTA 邀请上传自己的样本；字幕披露语言、时长限制和结果差异。"}
+  },
+  "duration_payload": {
+    "primary_type": "commercial",
+    "duration_method": "declared",
+    "target_seconds": 30,
+    "segments": [{"duration_seconds": 15}, {"duration_seconds": 15}]
+  },
+  "expected_duration": {"estimated_seconds": 30, "segment_count": 2, "diagnostics": ["within_target"]},
+  "review_weights": {
+    "audience_insight": 15,
+    "single_promise": 20,
+    "proof_strength": 20,
+    "product_integration": 15,
+    "action_drive": 15,
+    "compliance": 15
+  },
+  "forbidden_failure_pattern": "同时承诺所有卖点",
+  "negative_mutation": {"file": "review.md", "heading": "合规", "expected_error": "missing_route_anchor"}
+}

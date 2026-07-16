@@ -1,0 +1,45 @@
+{
+  "intent": "把骑行和版画两项个人兴趣合成一件原创作品，记录试做、失败与重新理解裂痕的过程。",
+  "expected_primary_route": "visual-essay",
+  "expected_secondary_type": "创作者纪录片",
+  "research_disposition": {
+    "required": false,
+    "reason": "内容来自个人创作过程，不补写外部事实。"
+  },
+  "artifact_headings": {
+    "storyboard.md": ["可见行动", "视觉母题", "环境声"],
+    "script.md": ["旁白克制"]
+  },
+  "artifact_bodies": {
+    "storyboard.md": {
+      "可见行动": "创作者把骑行轮胎纹理拓印到版面进行第一次试做；油墨糊掉路径并撕裂纸面，他停下后把裂痕重新刻成路线。",
+      "视觉母题": "蓝色裂痕从失败痕迹变成最终路线，连接骑行轨迹与版画两项个人兴趣。",
+      "环境声": "车轮空转、滚墨和撕纸声替代解释性旁白；失败后留一段静默。"
+    },
+    "script.md": {"旁白克制": "稀疏旁白只在主题恢复时出现：我不再修补裂痕，而把它刻进最终作品。画面先证明试做、失败和转变。"}
+  },
+  "duration_payload": {
+    "primary_type": "visual-essay",
+    "segments": [{"duration_seconds": 30}, {"duration_seconds": 25}, {"duration_seconds": 35}]
+  },
+  "expected_duration": {"estimated_seconds": 90, "segment_count": 3, "diagnostics": []},
+  "review_weights": {
+    "visible_action": 20,
+    "visual_storytelling": 20,
+    "inner_outer_change": 15,
+    "sound_design": 15,
+    "voiceover_restraint": 15,
+    "aesthetic_consistency": 15
+  },
+  "forbidden_failure_pattern": "先写散文再配装饰画面",
+  "negative_mutation": {"file": "storyboard.md", "heading": "可见行动", "expected_error": "missing_route_anchor"},
+  "creative_contract": {
+    "original_premise": "把骑行轨迹刻成版画",
+    "visible_trial": "把轮胎纹理拓印到版面",
+    "visible_failure": "油墨糊掉路径并撕裂纸面",
+    "visual_motif": "裂痕从失败痕迹变成路线",
+    "environment_sound": "车轮空转、滚墨与撕纸声",
+    "voiceover_policy": "只在意义转变处使用稀疏旁白",
+    "thematic_recovery": "不再修补裂痕，而把它刻进最终作品"
+  }
+}

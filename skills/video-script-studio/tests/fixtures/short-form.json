@@ -1,0 +1,32 @@
+{
+  "intent": "用一分钟基于完整来源讲清通知如何切碎注意力，并给观众一个立刻可做的动作。",
+  "expected_primary_route": "short-form",
+  "expected_secondary_type": "自然口播",
+  "research_disposition": {
+    "required": true,
+    "reason": "通知造成注意力切换的因果主张需要完整来源支持。"
+  },
+  "artifact_headings": {
+    "brief.md": ["观看理由"],
+    "outline.md": ["中段推进", "结尾兑现"]
+  },
+  "artifact_bodies": {
+    "brief.md": {"观看理由": "刚被消息打断的观众在一分钟内理解注意力切换的代价，并能立刻关闭非必要通知。"},
+    "outline.md": {"中段推进": "先展示一次弹窗打断，再比较关闭通知后的完整任务动作，让信息和画面逐步升级。", "结尾兑现": "回到同一任务，观众看到连续完成，并收到只关闭一个非必要通知的具体动作。"}
+  },
+  "duration_payload": {
+    "primary_type": "short-form",
+    "chinese_chars_per_minute": 60,
+    "segments": [{"text": "关闭通知", "pause_seconds": 1}]
+  },
+  "expected_duration": {"estimated_seconds": 5, "segment_count": 1, "diagnostics": []},
+  "review_weights": {
+    "viewing_reason": 25,
+    "pace_progression": 20,
+    "information_density": 20,
+    "natural_delivery": 15,
+    "ending_payoff": 20
+  },
+  "forbidden_failure_pattern": "连续三个空泛反问",
+  "negative_mutation": {"file": "brief.md", "heading": "观看理由", "expected_error": "missing_route_anchor"}
+}

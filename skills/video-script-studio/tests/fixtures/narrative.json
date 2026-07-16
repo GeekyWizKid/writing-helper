@@ -1,0 +1,33 @@
+{
+  "intent": "实习生必须在下班前找回误删录音，并在转正机会与保护同事之间选择。",
+  "expected_primary_route": "narrative",
+  "expected_secondary_type": "职场短剧",
+  "research_disposition": {
+    "required": false,
+    "reason": "故事为原创虚构，不主动引用现实事实。"
+  },
+  "artifact_headings": {
+    "brief.md": ["人物目标"],
+    "outline.md": ["阻力"],
+    "script.md": ["潜台词"]
+  },
+  "artifact_bodies": {
+    "brief.md": {"人物目标": "实习生必须在下班前找回唯一录音，否则同事会替她承担责任。"},
+    "outline.md": {"阻力": "管理员要求等待三天；承认违规备份会失去转正机会，迫使她在自保和保护同事之间选择。"},
+    "script.md": {"潜台词": "她说“按流程也好”，行动却是让同事先离开并独自递交违规记录。"}
+  },
+  "duration_payload": {
+    "primary_type": "narrative",
+    "segments": [{"dialogue_seconds": 10, "action_seconds": 15, "response_seconds": 5, "pause_seconds": 2}]
+  },
+  "expected_duration": {"estimated_seconds": 32, "segment_count": 1, "diagnostics": []},
+  "review_weights": {
+    "character_desire": 20,
+    "conflict_escalation": 25,
+    "scene_function": 20,
+    "subtext": 15,
+    "emotional_payoff": 20
+  },
+  "forbidden_failure_pattern": "用旁白宣布人物成长",
+  "negative_mutation": {"file": "script.md", "heading": "潜台词", "expected_error": "missing_route_anchor"}
+}
