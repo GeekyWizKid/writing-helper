@@ -92,16 +92,24 @@ class _StateCommittedError(StudioError):
 def _bounded_text(value: Any, field: str, *, nullable: bool = False) -> None:
     if nullable and value is None:
         return
-    if not isinstance(value, str) or len(value) > MAX_STATE_BYTES:
+    if not _valid_bounded_text(value, MAX_STATE_BYTES):
         raise StudioError(f"The {field} field is invalid.")
+
+
+def _valid_bounded_text(
+    value: Any, max_chars: int, *, nonblank: bool = False
+) -> bool:
+    if (
+        not isinstance(value, str)
+        or len(value) > max_chars
+        or (nonblank and not value.strip())
+    ):
+        return False
     try:
         value.encode("utf-8", errors="strict")
-    except UnicodeEncodeError as exc:
-        raise StudioError(f"The {field} field is invalid.") from exc
-
-
-def _has_surrogate(value: str) -> bool:
-    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _expected_stage(approvals: dict[str, str]) -> str:
@@ -634,9 +642,9 @@ def _read_journal_at(project_fd: int) -> dict[str, Any]:
         raise StudioError("The transaction journal schema is invalid.")
     if (
         value.get("stage") not in STAGES
-        or not isinstance(value.get("reason"), str)
-        or not value["reason"].strip()
-        or len(value["reason"]) > MAX_REASON_CHARS
+        or not _valid_bounded_text(
+            value.get("reason"), MAX_REASON_CHARS, nonblank=True
+        )
         or not isinstance(value.get("staging_name"), str)
         or not _STAGING_PATTERN.fullmatch(value["staging_name"])
         or not isinstance(value.get("snapshot_name"), str)
@@ -923,10 +931,7 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
     if stage not in STAGES:
         raise StudioError("The reopen stage is invalid.")
     if (
-        not isinstance(reason, str)
-        or not reason.strip()
-        or len(reason) > MAX_REASON_CHARS
-        or _has_surrogate(reason)
+        not _valid_bounded_text(reason, MAX_REASON_CHARS, nonblank=True)
     ):
         raise StudioError("The reopen reason must be nonblank and at most 4096 characters.")
 

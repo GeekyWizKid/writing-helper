@@ -29,6 +29,7 @@ from state_manager import (
     _open_history,
     _read_regular_at,
     _validate_state,
+    _valid_bounded_text,
     _verify_empty_tombstone_at,
 )
 from validate_sources import validate as validate_sources
@@ -414,9 +415,9 @@ def _validate_history_at(
                     or affected != sorted(affected)
                     or stage not in STAGES
                     or not name.endswith(f"-{stage}")
-                    or not isinstance(reason, str)
-                    or not reason.strip()
-                    or len(reason) > MAX_REASON_CHARS
+                    or not _valid_bounded_text(
+                        reason, MAX_REASON_CHARS, nonblank=True
+                    )
                     or entries != {"manifest.json", *affected}
                 ):
                     problems.add("invalid_history_snapshot")

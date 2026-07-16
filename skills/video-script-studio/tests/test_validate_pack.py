@@ -495,6 +495,22 @@ class ValidatePackTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         self.assertIn("invalid_history_snapshot", self.validator.validate_pack(self.project)["error_codes"])
 
+    def test_history_manifest_reason_surrogate_is_invalid_content(self) -> None:
+        self.state.reopen(self.project, "script", "正常归档原因")
+        self.state.approve(self.project, "script")
+        snapshot = next(
+            path for path in (self.project / "history").iterdir() if not path.name.startswith(".")
+        )
+        manifest_path = snapshot / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["reason"] = "\ud800"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=True), encoding="utf-8"
+        )
+        result = self.validator.validate_pack(self.project)
+        self.assertFalse(result["valid"])
+        self.assertIn("invalid_history_snapshot", result["error_codes"])
+
     def test_valid_reopen_snapshot_is_accepted_and_tampering_is_detected(self) -> None:
         self.state.reopen(self.project, "script", "发现需修改的脚本")
         self.state.approve(self.project, "script")

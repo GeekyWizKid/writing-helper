@@ -188,6 +188,38 @@ class StateManagerTests(unittest.TestCase):
         self.assertEqual(history_before, sorted(path.name for path in (self.project / "history").iterdir()))
         self.assertEqual(state_before, (self.project / "project.yaml").read_bytes())
 
+    def test_recovery_rejects_persisted_journal_reason_surrogate_safely(self) -> None:
+        self.module.approve(self.project, "brief")
+        real_recover = self.module._recover_transaction_at
+
+        def interrupt(name: str) -> None:
+            if name == "journaled":
+                raise KeyboardInterrupt(name)
+
+        def preserve_journal(project_fd: int, *, scan_orphans: bool = False):
+            if scan_orphans and (self.project / self.module.JOURNAL_NAME).exists():
+                raise self.module.StudioError("preserve journal")
+            return real_recover(project_fd, scan_orphans=scan_orphans)
+
+        with (
+            mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt),
+            mock.patch.object(
+                self.module, "_recover_transaction_at", side_effect=preserve_journal
+            ),
+        ):
+            with self.assertRaises(self.module.StudioError):
+                self.module.reopen(self.project, "brief", reason="rewrite")
+
+        journal_path = self.project / self.module.JOURNAL_NAME
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["reason"] = "\ud800"
+        journal_path.write_text(
+            json.dumps(journal, ensure_ascii=True), encoding="utf-8"
+        )
+        with self.assertRaises(self.module.StudioError):
+            self.module.status(self.project)
+        self.assertTrue(journal_path.exists())
+
     def test_reopen_rolls_back_snapshot_when_state_publication_fails(self) -> None:
         self.module.approve(self.project, "brief")
         history = self.project / "history"
