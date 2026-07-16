@@ -12,9 +12,9 @@
   ],
   "properties": {
     "project_path": {"type": "string"},
-    "primary_type": {"const": "visual-essay"},
-    "stage": {"const": "complete"},
-    "validation_valid": {"const": true},
+    "primary_type": {"enum": ["visual-essay"]},
+    "stage": {"enum": ["complete"]},
+    "validation_valid": {"enum": [true]},
     "saved_artifacts": {
       "type": "array",
       "items": {

@@ -421,8 +421,8 @@ gate_values = schema["properties"]["awaiting_gate"].get("enum", [])
 artifact_values = schema["properties"]["artifact"].get("enum", [])
 if gate not in gate_values or artifact not in artifact_values:
     raise SystemExit("gate schema requested an unsupported stop point")
-schema["properties"]["awaiting_gate"] = {"const": gate}
-schema["properties"]["artifact"] = {"const": artifact}
+schema["properties"]["awaiting_gate"] = {"enum": [gate]}
+schema["properties"]["artifact"] = {"enum": [artifact]}
 destination.write_text(
     json.dumps(schema, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

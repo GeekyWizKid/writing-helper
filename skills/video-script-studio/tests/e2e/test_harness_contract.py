@@ -160,8 +160,8 @@ class HarnessContractTests(unittest.TestCase):
             "codex_turn_schema_error",
             "gate_result_awaiting_gate_mismatch",
             "write_gate_schema",
-            '"const": gate',
-            '"const": artifact',
+            '"enum": [gate]',
+            '"enum": [artifact]',
             "DURATION_INPUT",
             "DURATION_RESULT",
             "independent-review",
@@ -255,9 +255,11 @@ class HarnessContractTests(unittest.TestCase):
             set(gate_schema["required"]),
         )
         self.assertFalse(final_schema["additionalProperties"])
-        self.assertEqual("visual-essay", final_schema["properties"]["primary_type"]["const"])
-        self.assertEqual("complete", final_schema["properties"]["stage"]["const"])
-        self.assertTrue(final_schema["properties"]["validation_valid"]["const"])
+        self.assertEqual(["visual-essay"], final_schema["properties"]["primary_type"]["enum"])
+        self.assertEqual(["complete"], final_schema["properties"]["stage"]["enum"])
+        self.assertEqual([True], final_schema["properties"]["validation_valid"]["enum"])
+        for schema_path in E2E_ROOT.glob("*.schema.json"):
+            self.assertNotIn('"const"', schema_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
