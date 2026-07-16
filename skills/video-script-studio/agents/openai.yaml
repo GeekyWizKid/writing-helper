@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video Script Studio"
+  short_description: "分阶段创作可拍摄的视频脚本与完整制作包"
+  default_prompt: "使用 $video-script-studio 从需求诊断开始创建一个可恢复的视频脚本项目。"
