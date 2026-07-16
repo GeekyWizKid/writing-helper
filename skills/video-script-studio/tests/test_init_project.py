@@ -457,6 +457,82 @@ class InitProjectTests(unittest.TestCase):
             with self.assertRaises(self.module.StudioError):
                 self.module.init_project(Path(directory), "Title", "podcast")
 
+    def test_secondary_type_accepts_natural_expression_label_and_persists_exactly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            label = "剧情/个人叙事 · experiment-log（第一季）"
+            result = self.module.init_project(
+                Path(directory),
+                "Expression",
+                "narrative",
+                secondary_type=label,
+                date="2026-07-17",
+            )
+
+            state = self.common.load_state_yaml(Path(result["path"]) / "project.yaml")
+            self.assertEqual(label, state["project"]["secondary_type"])
+
+    def test_secondary_type_accepts_none_and_two_hundred_unicode_code_points(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            none_result = self.module.init_project(
+                root,
+                "No expression",
+                "short-form",
+                secondary_type=None,
+                date="2026-07-17",
+            )
+            boundary_label = "叙" * 200
+            boundary_result = self.module.init_project(
+                root,
+                "Bounded expression",
+                "long-form",
+                secondary_type=boundary_label,
+                date="2026-07-17",
+            )
+
+            none_state = self.common.load_state_yaml(
+                Path(none_result["path"]) / "project.yaml"
+            )
+            boundary_state = self.common.load_state_yaml(
+                Path(boundary_result["path"]) / "project.yaml"
+            )
+            self.assertIsNone(none_state["project"]["secondary_type"])
+            self.assertEqual(
+                boundary_label, boundary_state["project"]["secondary_type"]
+            )
+
+    def test_secondary_type_rejects_invalid_metadata_before_filesystem_mutation(
+        self,
+    ) -> None:
+        invalid_values = (
+            "",
+            " \t ",
+            "line\nbreak",
+            "delete\x7fcontrol",
+            "unsafe\u2028separator",
+            "unsafe\u2029separator",
+            "叙" * 201,
+            7,
+            ["个人叙事"],
+        )
+        for value in invalid_values:
+            with self.subTest(value=repr(value)):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "must-not-exist"
+                    with self.assertRaises(self.module.StudioError):
+                        self.module.init_project(
+                            root,
+                            "Invalid expression",
+                            "narrative",
+                            secondary_type=value,
+                            date="2026-07-17",
+                        )
+                    self.assertFalse(root.exists())
+
     def test_existing_directory_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

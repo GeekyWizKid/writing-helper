@@ -11,6 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import unicodedata
 from contextlib import contextmanager
 from datetime import date as calendar_date
 from pathlib import Path
@@ -57,6 +58,9 @@ REQUIRED_ARTIFACTS = (
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "assets" / "project-state-template.yaml"
 _TYPE_SET = frozenset(PRIMARY_TYPES)
+# Expression labels are metadata, never path components. Bound their persisted
+# representation to 200 Unicode code points while preserving display punctuation.
+_SECONDARY_TYPE_MAX_CODEPOINTS = 200
 _UNSUPPORTED_PLATFORM_MESSAGE = (
     "Project initialization requires POSIX Darwin or Linux with fcntl and getuid "
     "support."
@@ -83,6 +87,25 @@ def _project_date(value: str | None) -> str:
     if parsed.isoformat() != value:
         raise StudioError("date must use YYYY-MM-DD format.")
     return value
+
+
+def _secondary_type(value: Any) -> str | None:
+    label = _text(value, "secondary_type", optional=True)
+    if label is None:
+        return None
+    if (
+        not label.strip()
+        or len(label) > _SECONDARY_TYPE_MAX_CODEPOINTS
+        or any(
+            unicodedata.category(character) in {"Cc", "Zl", "Zp"}
+            for character in label
+        )
+    ):
+        raise StudioError(
+            "secondary_type must be a nonblank metadata label of at most 200 "
+            "Unicode code points without control or line-separator characters."
+        )
+    return label
 
 
 def _require_supported_platform() -> Callable[[bytes, bytes], int]:
@@ -218,13 +241,11 @@ def init_project(
     """Create a new project without altering any existing directory."""
     title = _text(title, "title")  # type: ignore[assignment]
     primary_type = _text(primary_type, "primary_type")  # type: ignore[assignment]
-    secondary_type = _text(secondary_type, "secondary_type", optional=True)
+    secondary_type = _secondary_type(secondary_type)
     platform = _text(platform, "platform")  # type: ignore[assignment]
     profile_id = _text(profile_id, "profile_id", optional=True)
     if primary_type not in _TYPE_SET:
         raise StudioError("primary_type is not supported.")
-    if secondary_type is not None and secondary_type not in _TYPE_SET:
-        raise StudioError("secondary_type is not supported.")
 
     project_date = _project_date(date)
     native_rename = _require_supported_platform()
