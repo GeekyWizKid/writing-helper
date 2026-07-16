@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from helpers import SKILL_ROOT, load_script_module
 
@@ -38,6 +39,7 @@ class ProfileManagerTests(unittest.TestCase):
                 self.assertEqual("主账号", result["display_name"])
                 self.assertEqual(
                     {
+                        ".profile.lock",
                         "constraints.md",
                         "profile.md",
                         "samples",
@@ -155,6 +157,249 @@ class ProfileManagerTests(unittest.TestCase):
         }
         self.assertEqual(before, after)
 
+    def test_confirmed_update_rejects_whitespace_content_without_mutation(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        before = self._file_tree(self.root / "main")
+
+        with self.assertRaises(self.common.StudioError):
+            manager.update_profile(
+                self.root,
+                "main",
+                "  \n\t ",
+                confirmed=True,
+                change_note="must not clear profile",
+            )
+
+        self.assertEqual(before, self._file_tree(self.root / "main"))
+
+    def test_manifest_identity_mismatch_is_rejected_before_any_mutation(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        manifest_path = self.root / "main" / "versions" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["profile_id"] = "different-profile"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        before = self._file_tree(self.root / "main")
+
+        with self.assertRaises(self.common.StudioError):
+            manager.update_profile(
+                self.root,
+                "main",
+                "must not publish",
+                confirmed=True,
+                change_note="identity mismatch",
+            )
+
+        self.assertEqual(before, self._file_tree(self.root / "main"))
+
+    def test_update_publish_failures_roll_back_and_allow_retry(self) -> None:
+        manager = self.require_manager()
+        for publish_name in ("profile.md", "manifest.json"):
+            with self.subTest(publish_name=publish_name):
+                case_root = self.root / publish_name.replace(".", "-")
+                manager.create_profile(case_root, "main", "主账号")
+                profile_path = case_root / "main"
+                before = self._file_tree(profile_path)
+                target = (
+                    profile_path / "profile.md"
+                    if publish_name == "profile.md"
+                    else profile_path / "versions" / "manifest.json"
+                )
+                original_atomic_write = manager.atomic_write_text
+                failed = False
+
+                def fail_publish_once(path, content):
+                    nonlocal failed
+                    if Path(path) == target and not failed:
+                        failed = True
+                        raise self.common.StudioError("injected publish failure")
+                    return original_atomic_write(path, content)
+
+                with patch.object(manager, "atomic_write_text", fail_publish_once):
+                    with self.assertRaises(self.common.StudioError):
+                        manager.update_profile(
+                            case_root,
+                            "main",
+                            "new transactional content",
+                            confirmed=True,
+                            change_note="transaction test",
+                        )
+
+                self.assertTrue(failed, f"{publish_name} publish was not exercised")
+                self.assertEqual(before, self._file_tree(profile_path))
+                self.assertFalse((profile_path / "versions" / "v001").exists())
+                self.assertEqual([], list(profile_path.glob(".profile-txn-*")))
+                self.assertFalse((profile_path / ".transaction.json").exists())
+
+                retried = manager.update_profile(
+                    case_root,
+                    "main",
+                    "new transactional content",
+                    confirmed=True,
+                    change_note="transaction retry",
+                )
+                self.assertEqual(1, retried["version"])
+
+    def test_incomplete_rollback_is_recovered_by_next_operation(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        profile_path = self.root / "main"
+        before = self._file_tree(profile_path)
+        target = profile_path / "profile.md"
+        original_atomic_write = manager.atomic_write_text
+        target_failures = 0
+
+        def fail_publish_and_first_rollback(path, content):
+            nonlocal target_failures
+            if Path(path) == target and target_failures < 2:
+                target_failures += 1
+                raise self.common.StudioError("injected repeated failure")
+            return original_atomic_write(path, content)
+
+        with patch.object(manager, "atomic_write_text", fail_publish_and_first_rollback):
+            with self.assertRaises(self.common.StudioError):
+                manager.update_profile(
+                    self.root,
+                    "main",
+                    "interrupted content",
+                    confirmed=True,
+                    change_note="recovery test",
+                )
+
+        self.assertEqual(2, target_failures)
+        self.assertTrue((profile_path / ".transaction.json").is_file())
+        recovered = manager.read_profile(self.root, "main")
+        self.assertNotEqual("interrupted content", recovered["content"])
+        self.assertEqual(before, self._file_tree(profile_path))
+        self.assertFalse((profile_path / ".transaction.json").exists())
+        self.assertEqual([], list(profile_path.glob(".profile-txn-*")))
+
+        retried = manager.update_profile(
+            self.root,
+            "main",
+            "recovered content",
+            confirmed=True,
+            change_note="retry after recovery",
+        )
+        self.assertEqual(1, retried["version"])
+
+    def test_rejects_untrusted_or_symlinked_profile_roots(self) -> None:
+        manager = self.require_manager()
+        unsafe_root = Path(self.temporary_directory.name) / "unsafe"
+        unsafe_root.mkdir(mode=0o700)
+        unsafe_root.chmod(0o777)
+        with self.assertRaises(self.common.StudioError):
+            manager.create_profile(unsafe_root, "main", "Unsafe")
+
+        actual_root = Path(self.temporary_directory.name) / "actual"
+        actual_root.mkdir(mode=0o700)
+        symlink_root = Path(self.temporary_directory.name) / "linked"
+        symlink_root.symlink_to(actual_root, target_is_directory=True)
+        with self.assertRaises(self.common.StudioError):
+            manager.create_profile(symlink_root, "main", "Linked")
+
+    def test_symlinked_profile_lock_is_rejected_without_touching_target(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        lock_path = self.root / "main" / ".profile.lock"
+        lock_path.unlink(missing_ok=True)
+        outside = Path(self.temporary_directory.name) / "outside-lock"
+        outside.write_text("outside-safe", encoding="utf-8")
+        lock_path.symlink_to(outside)
+
+        with self.assertRaises(self.common.StudioError):
+            manager.read_profile(self.root, "main")
+
+        self.assertEqual("outside-safe", outside.read_text(encoding="utf-8"))
+
+    def test_group_writable_profile_directory_is_rejected(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        profile_path = self.root / "main"
+        profile_path.chmod(0o770)
+        self.addCleanup(profile_path.chmod, 0o700)
+
+        with self.assertRaises(self.common.StudioError):
+            manager.read_profile(self.root, "main")
+
+    def test_manifest_versions_require_canonical_complete_strict_history(self) -> None:
+        manager = self.require_manager()
+
+        def valid_entry(version: int = 1) -> dict:
+            return {
+                "change_note": "approved change",
+                "directory": f"v{version:03d}",
+                "timestamp": "2026-07-17T10:00:00Z",
+                "version": version,
+            }
+
+        variants = {
+            "boolean-version": [dict(valid_entry(), version=True)],
+            "zero-version": [dict(valid_entry(), version=0, directory="v000")],
+            "duplicate-version": [valid_entry(), valid_entry()],
+            "decreasing-version": [valid_entry(2), valid_entry(1)],
+            "wrong-directory": [dict(valid_entry(), directory="v999")],
+            "empty-note": [dict(valid_entry(), change_note=" ")],
+            "empty-timestamp": [dict(valid_entry(), timestamp="")],
+            "missing-snapshot": [valid_entry()],
+        }
+        for name, versions in variants.items():
+            with self.subTest(name=name):
+                case_root = self.root / name
+                manager.create_profile(case_root, "main", "主账号")
+                profile_path = case_root / "main"
+                if name != "missing-snapshot":
+                    for entry in versions:
+                        version = entry["version"]
+                        if type(version) is int and version > 0:
+                            snapshot = profile_path / "versions" / f"v{version:03d}"
+                            snapshot.mkdir(exist_ok=True)
+                            for document in ("profile.md", "style-analysis.md", "constraints.md"):
+                                (snapshot / document).write_text("snapshot", encoding="utf-8")
+                manifest_path = profile_path / "versions" / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["versions"] = versions
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaises(self.common.StudioError):
+                    manager.read_profile(case_root, "main")
+
+    def test_manifest_rejects_symlinked_snapshot_directory_or_document(self) -> None:
+        manager = self.require_manager()
+        for symlink_kind in ("directory", "document"):
+            with self.subTest(symlink_kind=symlink_kind):
+                case_root = self.root / symlink_kind
+                manager.create_profile(case_root, "main", "主账号")
+                manager.update_profile(
+                    case_root,
+                    "main",
+                    "version one",
+                    confirmed=True,
+                    change_note="create snapshot",
+                )
+                profile_path = case_root / "main"
+                snapshot_path = profile_path / "versions" / "v001"
+                if symlink_kind == "directory":
+                    outside_snapshot = case_root / "outside-snapshot"
+                    snapshot_path.rename(outside_snapshot)
+                    snapshot_path.symlink_to(outside_snapshot, target_is_directory=True)
+                else:
+                    snapshot_document = snapshot_path / "profile.md"
+                    snapshot_document.unlink()
+                    snapshot_document.symlink_to(profile_path / "profile.md")
+
+                with self.assertRaises(self.common.StudioError):
+                    manager.read_profile(case_root, "main")
+
+    @staticmethod
+    def _file_tree(root: Path) -> dict[Path, bytes]:
+        return {
+            path.relative_to(root): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+
     def test_confirmed_updates_snapshot_all_prior_documents_monotonically(self) -> None:
         manager = self.require_manager()
         manager.create_profile(self.root, "main", "主账号")
@@ -252,7 +497,10 @@ class ProfileManagerTests(unittest.TestCase):
         rejected = run(
             "update", "main", "unconfirmed", "--change-note", "blocked", expect_success=False
         )
-        self.assertEqual("", rejected.stdout)
+        self.assertEqual("", rejected.stderr)
+        self.assertEqual(
+            ["error"], sorted(json.loads(rejected.stdout)), rejected.stdout
+        )
         updated = json.loads(
             run(
                 "update",
@@ -266,6 +514,31 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertEqual(1, updated["version"])
         self.assertEqual("confirmed content", json.loads(run("read", "main").stdout)["content"])
         self.assertEqual(["main"], [item["profile_id"] for item in json.loads(run("list").stdout)])
+
+    def test_cli_parser_errors_are_single_json_objects_on_stdout(self) -> None:
+        manager = self.require_manager()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(Path(manager.__file__)),
+                "--root",
+                str(self.root),
+                "update",
+                "main",
+                "content",
+                "--change-note",
+                "missing confirmation",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+        self.assertEqual(2, completed.returncode)
+        self.assertEqual("", completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(["error"], sorted(payload))
+        self.assertNotIn("usage:", completed.stdout.lower())
 
 
 class ProfileTemplateTests(unittest.TestCase):
