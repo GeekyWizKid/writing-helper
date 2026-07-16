@@ -72,13 +72,13 @@ def read_json(path: str | os.PathLike[str]) -> dict[str, Any]:
     return value
 
 
-def write_json(path: str | os.PathLike[str], value: Mapping[str, Any]) -> None:
-    """Serialize a mapping as stable UTF-8 JSON and write it atomically."""
-    if not isinstance(value, Mapping):
-        raise StudioError("JSON data must be a mapping.")
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    """Serialize a dictionary as stable UTF-8 JSON and write it atomically."""
+    if not isinstance(value, dict):
+        raise StudioError("JSON data must be a dictionary.")
     try:
         content = json.dumps(
-            dict(value), ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False
+            value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False
         ) + "\n"
     except (TypeError, ValueError) as exc:
         raise StudioError("JSON data contains an unsupported value.") from exc
@@ -118,10 +118,10 @@ def _dump_mapping(value: Mapping[str, Any], indent: int) -> list[str]:
     return lines
 
 
-def dump_state_yaml(state: Mapping[str, Any]) -> str:
+def dump_state_yaml(state: dict[str, Any]) -> str:
     """Dump the supported deterministic YAML subset without dependencies."""
-    if not isinstance(state, Mapping):
-        raise StudioError("State must be a mapping.")
+    if not isinstance(state, dict):
+        raise StudioError("State must be a dictionary.")
     lines = _dump_mapping(state, 0)
     return "\n".join(lines) + "\n" if lines else "{}\n"
 
@@ -160,10 +160,8 @@ def _parse_yaml_scalar(raw_value: str) -> Any:
     raise StudioError("State YAML contains an unsupported scalar value.")
 
 
-def load_state_yaml(content: str) -> dict[str, Any]:
-    """Load the mapping-only YAML subset emitted by :func:`dump_state_yaml`."""
-    if not isinstance(content, str):
-        raise StudioError("State YAML must be text.")
+def _parse_state_yaml(content: str) -> dict[str, Any]:
+    """Parse the mapping-only YAML subset emitted by :func:`dump_state_yaml`."""
     if content.strip() == "{}":
         return {}
     raw_lines = content.splitlines()
@@ -205,3 +203,12 @@ def load_state_yaml(content: str) -> dict[str, Any]:
     if final_index != len(entries):
         raise StudioError("State YAML contains trailing invalid data.")
     return state
+
+
+def load_state_yaml(path: Path) -> dict[str, Any]:
+    """Read and parse a UTF-8 state YAML file."""
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise StudioError("Could not read the state YAML file.") from exc
+    return _parse_state_yaml(content)

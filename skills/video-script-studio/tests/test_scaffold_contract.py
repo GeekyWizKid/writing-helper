@@ -4,6 +4,7 @@ import json
 import re
 import tempfile
 import unittest
+from collections import UserDict
 from pathlib import Path
 
 from helpers import SKILL_ROOT, load_script_module
@@ -89,6 +90,12 @@ class CommonContractTests(unittest.TestCase):
             self.assertEqual(expected, path.read_text(encoding="utf-8"))
             self.assertEqual({"a": "中文", "z": True}, json.loads(expected))
 
+    def test_write_json_rejects_non_dict_mappings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.json"
+            with self.assertRaises(self.common.StudioError):
+                self.common.write_json(path, UserDict({"title": "video"}))
+
     def test_state_yaml_round_trips_supported_subset_deterministically(self) -> None:
         state = {
             "title": "你好: video",
@@ -98,7 +105,10 @@ class CommonContractTests(unittest.TestCase):
         }
         dumped = self.common.dump_state_yaml(state)
         self.assertEqual(dumped, self.common.dump_state_yaml(state))
-        self.assertEqual(state, self.common.load_state_yaml(dumped))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.yaml"
+            path.write_text(dumped, encoding="utf-8")
+            self.assertEqual(state, self.common.load_state_yaml(path))
         self.assertLess(dumped.index("missing:"), dumped.index("nested:"))
         self.assertLess(dumped.index("nested:"), dumped.index("ready:"))
 
@@ -107,10 +117,21 @@ class CommonContractTests(unittest.TestCase):
             self.common.dump_state_yaml({"count": 1})
         with self.assertRaises(self.common.StudioError):
             self.common.dump_state_yaml({"valid": "value", 1: "invalid key"})
-        for invalid in ("- item\n", "name: 12\n", "child:\n   key: true\n"):
-            with self.subTest(invalid=invalid):
-                with self.assertRaises(self.common.StudioError):
-                    self.common.load_state_yaml(invalid)
+        with self.assertRaises(self.common.StudioError):
+            self.common.dump_state_yaml(UserDict({"title": "video"}))
+        with tempfile.TemporaryDirectory() as directory:
+            for index, invalid in enumerate(("- item\n", "name: 12\n", "child:\n   key: true\n")):
+                path = Path(directory) / f"invalid-{index}.yaml"
+                path.write_text(invalid, encoding="utf-8")
+                with self.subTest(invalid=invalid):
+                    with self.assertRaises(self.common.StudioError):
+                        self.common.load_state_yaml(path)
+
+    def test_load_state_yaml_wraps_file_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.yaml"
+            with self.assertRaises(self.common.StudioError):
+                self.common.load_state_yaml(missing)
 
 
 if __name__ == "__main__":
