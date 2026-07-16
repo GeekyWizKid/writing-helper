@@ -37,6 +37,22 @@ class InitProjectTests(unittest.TestCase):
             )
             self.assertEqual("2026-07-17-你好-Video-2026", Path(result["path"]).name)
 
+    def test_returns_exact_public_creation_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.module.init_project(
+                Path(directory), "Public Result", "short-form", date="2026-07-17"
+            )
+            self.assertEqual(
+                {
+                    "status": "created",
+                    "project_id": "2026-07-17-Public-Result",
+                    "path": str(
+                        Path(directory).resolve() / "2026-07-17-Public-Result"
+                    ),
+                },
+                result,
+            )
+
     def test_uses_untitled_video_for_title_without_safe_characters(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = self.module.init_project(
@@ -144,8 +160,6 @@ class InitProjectCliTests(unittest.TestCase):
                     "CLI 视频",
                     "--primary-type",
                     "short-form",
-                    "--date",
-                    "2026-07-17",
                 ],
                 check=False,
                 capture_output=True,
@@ -156,8 +170,37 @@ class InitProjectCliTests(unittest.TestCase):
             lines = completed.stdout.splitlines()
             self.assertEqual(1, len(lines))
             payload = json.loads(lines[0])
-            self.assertEqual("ok", payload["status"])
+            self.assertEqual({"status", "project_id", "path"}, set(payload))
+            self.assertEqual("created", payload["status"])
+            self.assertEqual(Path(payload["path"]).name, payload["project_id"])
+            self.assertTrue(Path(payload["path"]).is_absolute())
             self.assertTrue(Path(payload["path"]).is_dir())
+
+    def test_cli_rejects_private_date_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.SCRIPT),
+                    "--root",
+                    directory,
+                    "--title",
+                    "CLI 视频",
+                    "--primary-type",
+                    "short-form",
+                    "--date",
+                    "2026-07-17",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(2, completed.returncode)
+            self.assertEqual("", completed.stderr)
+            self.assertEqual(
+                {"error": "Invalid command-line arguments.", "status": "error"},
+                json.loads(completed.stdout),
+            )
 
     def test_cli_invalid_input_is_sanitized_json_with_exit_two(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

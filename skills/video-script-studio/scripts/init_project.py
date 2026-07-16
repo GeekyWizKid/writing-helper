@@ -153,8 +153,8 @@ def init_project(
 
     return {
         "path": str(project),
-        "project_file": str(project / "project.yaml"),
-        "status": "ok",
+        "project_id": project.name,
+        "status": "created",
     }
 
 
@@ -171,7 +171,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--secondary-type")
     parser.add_argument("--platform", default="unspecified")
     parser.add_argument("--profile-id")
-    parser.add_argument("--date")
     return parser
 
 
@@ -185,7 +184,6 @@ def main(argv: list[str] | None = None) -> int:
             secondary_type=arguments.secondary_type,
             platform=arguments.platform,
             profile_id=arguments.profile_id,
-            date=arguments.date,
         )
         payload = result
         exit_code = 0
