@@ -17,4 +17,4 @@
 - 时长方法：视觉随笔按五个场景 18、22、20、15、15 秒估算，总计 90 秒；后续必须实际运行确定性时长估算器并在脚本中记录结果
 - 发布包装：需要 assets.md 与 publish.md，但不得自动生成媒体或发布
 
-本轮只执行到 brief 确认门：初始化项目，写入并展示完整 `brief.md`，只创建并展示 brief.md，不得批准 brief，也不得提前创建或批准 research、concept、outline、script。最终严格输出 JSON：`project_path` 为真实绝对路径，`awaiting_gate` 为 `brief`，`artifact` 为 `brief.md`。
+初始化时 `--platform` 必须逐字使用 `YouTube 16:9`。本轮只执行到 brief 确认门：初始化项目，只创建并展示 brief.md 的完整阶段内容；这里的“创建”只允许改写初始化器的 `brief.md` 骨架，不得改写初始化器已经创建的其他 Markdown 骨架，不得批准 brief，也不得提前创建或批准 research、concept、outline、script。`brief.md` 必须恰好使用以下五个二级标题并写入具体内容：`## 创作命题`、`## 受众与目标`、`## 制作边界`、`## 事实与权利边界`、`## 视觉随笔硬约束`；正文必须逐字保留 `visual-essay`、`骑行`、`版画`、`90`、`无外部事实` 和 `权利`。最终严格输出 JSON：`project_path` 为真实绝对路径，`awaiting_gate` 为 `brief`，`artifact` 为 `brief.md`。

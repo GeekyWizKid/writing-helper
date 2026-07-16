@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_path", "stage", "authored_artifacts"],
+  "properties": {
+    "project_path": {"type": "string"},
+    "stage": {"const": "independent-review"},
+    "authored_artifacts": {
+      "type": "array",
+      "items": {"enum": ["storyboard.md", "assets.md", "publish.md"]}
+    }
+  }
+}

@@ -47,7 +47,15 @@ class HarnessContractTests(unittest.TestCase):
             '-m 600 "$ORIGINAL_AUTH"',
             "sha256",
             "run_with_timeout",
+            "snapshot_project",
+            "assert_only_paths_changed",
+            "assert_matches_initializer_baseline",
+            "assert_exact_approvals",
             "assert_approved_unchanged",
+            "DURATION_INPUT",
+            "DURATION_RESULT",
+            "independent-review",
+            "TURN7_PROMPT",
             'import_module("validate_pack")',
             "state_manager.py",
             'import_module("validate_sources")',
@@ -57,7 +65,56 @@ class HarnessContractTests(unittest.TestCase):
         ):
             self.assertIn(required, content)
         self.assertNotIn("dangerously-bypass-approvals-and-sandbox", content)
-        self.assertEqual(6, content.count("run_codex_turn "))
+        self.assertNotIn("redacted_log_tail", content)
+        self.assertNotIn("VIDEO_SCRIPT_STUDIO_OFFICIAL_VALIDATOR", content)
+        self.assertIn("private log withheld", content)
+        self.assertEqual(7, content.count("run_codex_turn "))
+        self.assertEqual(
+            7, content.count('assert_matches_initializer_baseline "$PROJECT"')
+        )
+        self.assertEqual(6, content.count('assert_only_paths_changed "$SNAPSHOT'))
+        self.assertEqual(7, content.count('assert_exact_approvals "$PROJECT"'))
+        self.assertIn("from init_project import init_project", content)
+        for allowlist in (
+            "project.yaml research.md sources.md",
+            "project.yaml concepts.md",
+            "project.yaml outline.md",
+            "project.yaml script.md",
+            "project.yaml storyboard.md assets.md publish.md",
+            "project.yaml review.md",
+        ):
+            self.assertIn(allowlist, content)
+        self.assertLess(
+            content.index("official-validator.log"),
+            content.index('-m 600 "$ORIGINAL_AUTH"'),
+        )
+        self.assertLess(
+            content.index("official-validator.log"),
+            content.index("# Authentication is deliberately untouched"),
+        )
+        self.assertIn(
+            'OFFICIAL_VALIDATOR="/Users/apulu/.codex/skills/.system/skill-creator/scripts/quick_validate.py"',
+            content,
+        )
+
+    def test_harness_enforces_semantics_and_independent_review(self) -> None:
+        content = HARNESS.read_text(encoding="utf-8")
+        for required in (
+            "brief.md",
+            "方案 A",
+            "方案 B",
+            "方案 C",
+            "体验节点",
+            "可见试做",
+            "失败",
+            "环境声",
+            "review.md",
+            "第七会话",
+            '"estimated_seconds": 90',
+            '"segment_count": 5',
+        ):
+            self.assertIn(required, content)
+        self.assertTrue((E2E_ROOT / "review-result.schema.json").is_file())
 
     def test_prompts_and_schemas_require_real_staged_completion(self) -> None:
         initial = (E2E_ROOT / "visual-essay-prompt.md").read_text(encoding="utf-8")
