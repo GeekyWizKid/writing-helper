@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -206,17 +207,23 @@ class ProfileManagerTests(unittest.TestCase):
                     if publish_name == "profile.md"
                     else profile_path / "versions" / "manifest.json"
                 )
-                original_atomic_write = manager.atomic_write_text
+                original_atomic_write = manager._atomic_write_at
+                target_parent = target.parent.stat()
                 failed = False
 
-                def fail_publish_once(path, content):
+                def fail_publish_once(dir_fd, name, content):
                     nonlocal failed
-                    if Path(path) == target and not failed:
+                    opened_parent = os.fstat(dir_fd)
+                    same_parent = (opened_parent.st_dev, opened_parent.st_ino) == (
+                        target_parent.st_dev,
+                        target_parent.st_ino,
+                    )
+                    if same_parent and name == target.name and not failed:
                         failed = True
                         raise self.common.StudioError("injected publish failure")
-                    return original_atomic_write(path, content)
+                    return original_atomic_write(dir_fd, name, content)
 
-                with patch.object(manager, "atomic_write_text", fail_publish_once):
+                with patch.object(manager, "_atomic_write_at", fail_publish_once):
                     with self.assertRaises(self.common.StudioError):
                         manager.update_profile(
                             case_root,
@@ -247,17 +254,23 @@ class ProfileManagerTests(unittest.TestCase):
         profile_path = self.root / "main"
         before = self._file_tree(profile_path)
         target = profile_path / "profile.md"
-        original_atomic_write = manager.atomic_write_text
+        original_atomic_write = manager._atomic_write_at
+        target_parent = target.parent.stat()
         target_failures = 0
 
-        def fail_publish_and_first_rollback(path, content):
+        def fail_publish_and_first_rollback(dir_fd, name, content):
             nonlocal target_failures
-            if Path(path) == target and target_failures < 2:
+            opened_parent = os.fstat(dir_fd)
+            same_parent = (opened_parent.st_dev, opened_parent.st_ino) == (
+                target_parent.st_dev,
+                target_parent.st_ino,
+            )
+            if same_parent and name == target.name and target_failures < 2:
                 target_failures += 1
                 raise self.common.StudioError("injected repeated failure")
-            return original_atomic_write(path, content)
+            return original_atomic_write(dir_fd, name, content)
 
-        with patch.object(manager, "atomic_write_text", fail_publish_and_first_rollback):
+        with patch.object(manager, "_atomic_write_at", fail_publish_and_first_rollback):
             with self.assertRaises(self.common.StudioError):
                 manager.update_profile(
                     self.root,
@@ -283,6 +296,126 @@ class ProfileManagerTests(unittest.TestCase):
             change_note="retry after recovery",
         )
         self.assertEqual(1, retried["version"])
+
+    def test_versions_swap_after_validation_never_writes_outside_root(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        profile_path = self.root / "main"
+        versions_path = profile_path / "versions"
+        saved_versions = profile_path / "versions-original"
+        outside_versions = Path(self.temporary_directory.name) / "outside-versions"
+        outside_versions.mkdir(mode=0o700)
+        original_revalidate = manager._revalidate_open_directories
+        swapped = False
+
+        def swap_after_validation(handles):
+            nonlocal swapped
+            result = original_revalidate(handles)
+            if not swapped and (profile_path / ".transaction.json").exists():
+                versions_path.rename(saved_versions)
+                versions_path.symlink_to(outside_versions, target_is_directory=True)
+                swapped = True
+            return result
+
+        try:
+            with patch.object(manager, "_revalidate_open_directories", swap_after_validation):
+                try:
+                    manager.update_profile(
+                        self.root,
+                        "main",
+                        "race-sensitive-content",
+                        confirmed=True,
+                        change_note="race test",
+                    )
+                except self.common.StudioError:
+                    pass
+            self.assertTrue(swapped)
+            self.assertEqual([], list(outside_versions.iterdir()))
+        finally:
+            if versions_path.is_symlink():
+                versions_path.unlink()
+            if saved_versions.exists():
+                saved_versions.rename(versions_path)
+
+        manager.read_profile(self.root, "main")
+        self.assertFalse((profile_path / ".transaction.json").exists())
+        self.assertEqual([], list(profile_path.glob(".profile-txn-*")))
+
+    def test_keyboard_interrupt_staging_leaves_no_sensitive_orphan(self) -> None:
+        manager = self.require_manager()
+        for interrupt_point in ("before-staging", "after-sensitive-staging"):
+            with self.subTest(interrupt_point=interrupt_point):
+                case_root = self.root / interrupt_point
+                manager.create_profile(case_root, "main", "主账号")
+                profile_path = case_root / "main"
+                secret = f"sensitive-{interrupt_point}"
+                original_atomic_write = manager._atomic_write_at
+                interrupted = False
+
+                def interrupt_staging(dir_fd, name, content):
+                    nonlocal interrupted
+                    parent = Path(os.path.realpath(f"/dev/fd/{dir_fd}"))
+                    is_staging = any(
+                        part.startswith(".profile-txn-") for part in parent.parts
+                    )
+                    if interrupt_point == "before-staging" and is_staging and not interrupted:
+                        interrupted = True
+                        raise KeyboardInterrupt()
+                    result = original_atomic_write(dir_fd, name, content)
+                    if content == secret and not interrupted:
+                        interrupted = True
+                        raise KeyboardInterrupt()
+                    return result
+
+                with patch.object(manager, "_atomic_write_at", interrupt_staging):
+                    with self.assertRaises(KeyboardInterrupt):
+                        manager.update_profile(
+                            case_root,
+                            "main",
+                            secret,
+                            confirmed=True,
+                            change_note="cancellation test",
+                        )
+
+                self.assertTrue(interrupted)
+                manager.read_profile(case_root, "main")
+                self.assertEqual([], list(profile_path.glob(".profile-txn-*")))
+                self.assertFalse((profile_path / ".transaction.json").exists())
+                for path in profile_path.rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        self.assertNotIn(secret, path.read_text(encoding="utf-8"))
+
+    def test_keyboard_interrupt_after_complete_staging_recovers_cleanly(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        profile_path = self.root / "main"
+        secret = "sensitive-after-complete-staging"
+        original_revalidate = manager._revalidate_open_directories
+        validations = 0
+
+        def interrupt_second_validation(handles):
+            nonlocal validations
+            validations += 1
+            result = original_revalidate(handles)
+            if validations == 2:
+                raise KeyboardInterrupt()
+            return result
+
+        with patch.object(manager, "_revalidate_open_directories", interrupt_second_validation):
+            with self.assertRaises(KeyboardInterrupt):
+                manager.update_profile(
+                    self.root,
+                    "main",
+                    secret,
+                    confirmed=True,
+                    change_note="interrupt after staging",
+                )
+
+        self.assertEqual(2, validations)
+        recovered = manager.read_profile(self.root, "main")
+        self.assertNotEqual(secret, recovered["content"])
+        self.assertEqual([], list(profile_path.glob(".profile-txn-*")))
+        self.assertFalse((profile_path / ".transaction.json").exists())
 
     def test_rejects_untrusted_or_symlinked_profile_roots(self) -> None:
         manager = self.require_manager()
@@ -360,6 +493,29 @@ class ProfileManagerTests(unittest.TestCase):
                 manifest_path = profile_path / "versions" / "manifest.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["versions"] = versions
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaises(self.common.StudioError):
+                    manager.read_profile(case_root, "main")
+
+    def test_manifest_rejects_invalid_creator_metadata(self) -> None:
+        manager = self.require_manager()
+        variants = {
+            "blank-display-name": {"display_name": " "},
+            "invalid-created-at": {"created_at": "yesterday"},
+            "invalid-updated-at": {"updated_at": "soon"},
+            "created-after-updated": {
+                "created_at": "2026-07-18T00:00:00Z",
+                "updated_at": "2026-07-17T00:00:00Z",
+            },
+        }
+        for name, changes in variants.items():
+            with self.subTest(name=name):
+                case_root = self.root / name
+                manager.create_profile(case_root, "main", "主账号")
+                manifest_path = case_root / "main" / "versions" / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest.update(changes)
                 manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
                 with self.assertRaises(self.common.StudioError):
