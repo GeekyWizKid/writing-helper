@@ -97,13 +97,14 @@ def _secondary_type(value: Any) -> str | None:
         not label.strip()
         or len(label) > _SECONDARY_TYPE_MAX_CODEPOINTS
         or any(
-            unicodedata.category(character) in {"Cc", "Zl", "Zp"}
+            unicodedata.category(character) in {"Cc", "Cs", "Zl", "Zp"}
             for character in label
         )
     ):
         raise StudioError(
             "secondary_type must be a nonblank metadata label of at most 200 "
-            "Unicode code points without control or line-separator characters."
+            "Unicode code points without control, surrogate, or line-separator "
+            "characters."
         )
     return label
 

@@ -515,6 +515,7 @@ class InitProjectTests(unittest.TestCase):
             "delete\x7fcontrol",
             "unsafe\u2028separator",
             "unsafe\u2029separator",
+            "bad\ud800label",
             "叙" * 201,
             7,
             ["个人叙事"],
