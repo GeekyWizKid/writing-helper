@@ -13,9 +13,34 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 HARNESS = REPO_ROOT / "scripts" / "verify-video-script-studio-e2e.sh"
 E2E_ROOT = Path(__file__).resolve().parent
 GATE_DIAGNOSTIC = E2E_ROOT / "gate_result_diagnostic.py"
+CODEX_FAILURE_DIAGNOSTIC = E2E_ROOT / "codex_failure_diagnostic.py"
 
 
 class HarnessContractTests(unittest.TestCase):
+    def test_codex_failure_diagnostics_never_reflect_private_log_text(self) -> None:
+        self.assertTrue(CODEX_FAILURE_DIAGNOSTIC.is_file())
+        cases = (
+            (124, "anything", "codex_turn_timeout"),
+            (1, "Invalid JSON schema for response_format SECRET", "codex_turn_schema_error"),
+            (1, "structured output did not match SECRET", "codex_turn_structured_output_error"),
+            (1, "401 unauthorized SECRET", "codex_turn_auth_error"),
+            (1, "429 rate limit SECRET", "codex_turn_rate_limit"),
+            (1, "connection reset SECRET", "codex_turn_network_error"),
+            (7, "unclassified SECRET", "codex_turn_nonzero"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "private.log"
+            for exit_code, payload, expected in cases:
+                with self.subTest(expected=expected):
+                    log.write_text(payload, encoding="utf-8")
+                    completed = subprocess.run(
+                        ["python3", str(CODEX_FAILURE_DIAGNOSTIC), str(exit_code), str(log)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    self.assertEqual(expected + "\n", completed.stdout)
+                    self.assertNotIn("SECRET", completed.stdout + completed.stderr)
+
     def test_gate_result_diagnostics_are_fixed_and_field_specific(self) -> None:
         self.assertTrue(GATE_DIAGNOSTIC.is_file())
         with tempfile.TemporaryDirectory() as directory:
@@ -131,6 +156,8 @@ class HarnessContractTests(unittest.TestCase):
             "assert_exact_approvals",
             "assert_approved_unchanged",
             "gate_result_diagnostic.py",
+            "codex_failure_diagnostic.py",
+            "codex_turn_schema_error",
             "gate_result_awaiting_gate_mismatch",
             "write_gate_schema",
             '"const": gate',

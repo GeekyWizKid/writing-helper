@@ -206,6 +206,7 @@ RUNTIME_GATE_SCHEMA="$INSTALLED_SKILL/tests/e2e/gate-result.schema.json"
 RUNTIME_REVIEW_SCHEMA="$INSTALLED_SKILL/tests/e2e/review-result.schema.json"
 RUNTIME_FINAL_SCHEMA="$INSTALLED_SKILL/tests/e2e/expected-result.schema.json"
 RUNTIME_GATE_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/gate_result_diagnostic.py"
+RUNTIME_CODEX_FAILURE_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/codex_failure_diagnostic.py"
 "$PYTHON_BIN" - "$INSTALLED_SKILL" <<'PY'
 import shutil
 import sys
@@ -368,7 +369,8 @@ run_codex_turn() {
   local schema_path=$2
   local result_path=$3
   local log_path=$4
-  if ! run_with_timeout "$TURN_TIMEOUT" "$log_path" "$prompt_path" \
+  local exit_code=0
+  if run_with_timeout "$TURN_TIMEOUT" "$log_path" "$prompt_path" \
     "$ENV_BIN" -i \
       PATH="$ISOLATED_PATH" HOME="$TMP_HOME" CODEX_HOME="$TMP_CODEX_HOME" \
       XDG_CONFIG_HOME="$TMP_XDG_CONFIG" XDG_DATA_HOME="$TMP_XDG_DATA" \
@@ -379,7 +381,21 @@ run_codex_turn() {
       --skip-git-repo-check --sandbox workspace-write \
       -c 'approval_policy="never"' --output-schema "$schema_path" \
       -C "$TMP_WORKSPACE" -o "$result_path" -; then
-    die "Codex turn failed or timed out; private log withheld"
+    :
+  else
+    exit_code=$?
+    local diagnostic
+    diagnostic="$($PYTHON_BIN "$RUNTIME_CODEX_FAILURE_DIAGNOSTIC" "$exit_code" "$log_path")" \
+      || die "codex_turn_diagnostic_failure"
+    case "$diagnostic" in
+      codex_turn_timeout|codex_turn_schema_error|codex_turn_structured_output_error|codex_turn_auth_error|codex_turn_rate_limit|codex_turn_network_error|codex_turn_nonzero)
+        printf '%s\n' "$diagnostic" >&2
+        ;;
+      *)
+        die "codex_turn_diagnostic_failure"
+        ;;
+    esac
+    die "Codex turn failed; private log withheld"
   fi
   [[ -s "$result_path" ]] || die "Codex turn did not produce structured output"
   "$PYTHON_BIN" - "$result_path" <<'PY'
