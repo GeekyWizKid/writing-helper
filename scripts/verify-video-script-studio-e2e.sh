@@ -205,6 +205,7 @@ RUNTIME_INITIAL_PROMPT="$INSTALLED_SKILL/tests/e2e/visual-essay-prompt.md"
 RUNTIME_GATE_SCHEMA="$INSTALLED_SKILL/tests/e2e/gate-result.schema.json"
 RUNTIME_REVIEW_SCHEMA="$INSTALLED_SKILL/tests/e2e/review-result.schema.json"
 RUNTIME_FINAL_SCHEMA="$INSTALLED_SKILL/tests/e2e/expected-result.schema.json"
+RUNTIME_GATE_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/gate_result_diagnostic.py"
 "$PYTHON_BIN" - "$INSTALLED_SKILL" <<'PY'
 import shutil
 import sys
@@ -610,20 +611,22 @@ assert_gate_result() {
   local project=$2
   local gate=$3
   local artifact=$4
-  "$PYTHON_BIN" - "$result" "$project" "$gate" "$artifact" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-result_path, project_path, gate, artifact = sys.argv[1:]
-value = json.loads(Path(result_path).read_text(encoding="utf-8"))
-if set(value) != {"project_path", "awaiting_gate", "artifact"}:
-    raise SystemExit("gate result has unexpected fields")
-if Path(value["project_path"]).resolve() != Path(project_path).resolve():
-    raise SystemExit("gate result project path mismatch")
-if value["awaiting_gate"] != gate or value["artifact"] != artifact:
-    raise SystemExit("gate result does not match the expected stop point")
-PY
+  local diagnostics code
+  diagnostics="$("$PYTHON_BIN" "$RUNTIME_GATE_DIAGNOSTIC" \
+    "$result" "$project" "$gate" "$artifact")" \
+    || die "gate_result_diagnostic_failure"
+  [[ -z "$diagnostics" ]] && return 0
+  while IFS= read -r code; do
+    case "$code" in
+      gate_result_invalid_json|gate_result_invalid_shape|gate_result_project_path_mismatch|gate_result_awaiting_gate_mismatch|gate_result_artifact_mismatch)
+        printf '%s\n' "$code" >&2
+        ;;
+      *)
+        die "gate_result_diagnostic_failure"
+        ;;
+    esac
+  done <<<"$diagnostics"
+  die "gate result contract failed"
 }
 
 assert_review_result() {

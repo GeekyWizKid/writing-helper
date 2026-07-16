@@ -11,9 +11,41 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[4]
 HARNESS = REPO_ROOT / "scripts" / "verify-video-script-studio-e2e.sh"
 E2E_ROOT = Path(__file__).resolve().parent
+GATE_DIAGNOSTIC = E2E_ROOT / "gate_result_diagnostic.py"
 
 
 class HarnessContractTests(unittest.TestCase):
+    def test_gate_result_diagnostics_are_fixed_and_field_specific(self) -> None:
+        self.assertTrue(GATE_DIAGNOSTIC.is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected_project = root / "expected-project"
+            expected_project.mkdir()
+            result_path = root / "result.json"
+
+            cases = (
+                ("not json", ["gate_result_invalid_json"]),
+                (json.dumps({"project_path": str(expected_project)}), ["gate_result_invalid_shape"]),
+                (json.dumps({"project_path": str(root / "other"), "awaiting_gate": "research", "artifact": "research.md"}), ["gate_result_project_path_mismatch"]),
+                (json.dumps({"project_path": str(expected_project), "awaiting_gate": "brief", "artifact": "research.md"}), ["gate_result_awaiting_gate_mismatch"]),
+                (json.dumps({"project_path": str(expected_project), "awaiting_gate": "research", "artifact": "brief.md"}), ["gate_result_artifact_mismatch"]),
+                (json.dumps({"project_path": str(expected_project), "awaiting_gate": "brief", "artifact": "brief.md"}), ["gate_result_awaiting_gate_mismatch", "gate_result_artifact_mismatch"]),
+                (json.dumps({"project_path": str(expected_project), "awaiting_gate": "research", "artifact": "research.md"}), []),
+            )
+            for payload, expected_codes in cases:
+                with self.subTest(expected_codes=expected_codes):
+                    result_path.write_text(payload, encoding="utf-8")
+                    completed = subprocess.run(
+                        [
+                            "python3", str(GATE_DIAGNOSTIC), str(result_path),
+                            str(expected_project), "research", "research.md",
+                        ],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    self.assertEqual(expected_codes, completed.stdout.splitlines())
+                    self.assertNotIn(str(root), completed.stdout + completed.stderr)
+
     def test_harness_has_safe_static_contract_and_preflight(self) -> None:
         self.assertTrue(HARNESS.is_file(), "Task11 E2E harness is missing")
         syntax = subprocess.run(
@@ -93,6 +125,8 @@ class HarnessContractTests(unittest.TestCase):
             "assert_matches_initializer_baseline",
             "assert_exact_approvals",
             "assert_approved_unchanged",
+            "gate_result_diagnostic.py",
+            "gate_result_awaiting_gate_mismatch",
             "DURATION_INPUT",
             "DURATION_RESULT",
             "independent-review",
