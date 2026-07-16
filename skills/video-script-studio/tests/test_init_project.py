@@ -473,6 +473,22 @@ class InitProjectTests(unittest.TestCase):
             state = self.common.load_state_yaml(Path(result["path"]) / "project.yaml")
             self.assertEqual(label, state["project"]["secondary_type"])
 
+    def test_secondary_type_accepts_natural_zwj_emoji_and_persists_exactly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            label = "家庭故事 👨\u200d👩\u200d👧\u200d👦 / می\u200cخواهم"
+            result = self.module.init_project(
+                Path(directory),
+                "Family expression",
+                "narrative",
+                secondary_type=label,
+                date="2026-07-17",
+            )
+
+            state = self.common.load_state_yaml(Path(result["path"]) / "project.yaml")
+            self.assertEqual(label, state["project"]["secondary_type"])
+
     def test_secondary_type_accepts_none_and_two_hundred_unicode_code_points(
         self,
     ) -> None:
@@ -516,6 +532,20 @@ class InitProjectTests(unittest.TestCase):
             "unsafe\u2028separator",
             "unsafe\u2029separator",
             "bad\ud800label",
+            "left-to-right-mark\u200e",
+            "right-to-left-mark\u200f",
+            "left-to-right-embedding\u202a",
+            "right-to-left-embedding\u202b",
+            "pop-directional-formatting\u202c",
+            "left-to-right-override\u202d",
+            "right-to-left-override\u202e",
+            "left-to-right-isolate\u2066",
+            "right-to-left-isolate\u2067",
+            "first-strong-isolate\u2068",
+            "pop-directional-isolate\u2069",
+            "byte-order-mark\ufeff",
+            "zero-width-space\u200b",
+            "word-joiner\u2060",
             "叙" * 201,
             7,
             ["个人叙事"],

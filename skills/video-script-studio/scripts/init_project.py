@@ -61,6 +61,7 @@ _TYPE_SET = frozenset(PRIMARY_TYPES)
 # Expression labels are metadata, never path components. Bound their persisted
 # representation to 200 Unicode code points while preserving display punctuation.
 _SECONDARY_TYPE_MAX_CODEPOINTS = 200
+_ALLOWED_SECONDARY_TYPE_FORMAT_CONTROLS = frozenset({"\u200c", "\u200d"})
 _UNSUPPORTED_PLATFORM_MESSAGE = (
     "Project initialization requires POSIX Darwin or Linux with fcntl and getuid "
     "support."
@@ -98,13 +99,17 @@ def _secondary_type(value: Any) -> str | None:
         or len(label) > _SECONDARY_TYPE_MAX_CODEPOINTS
         or any(
             unicodedata.category(character) in {"Cc", "Cs", "Zl", "Zp"}
+            or (
+                unicodedata.category(character) == "Cf"
+                and character not in _ALLOWED_SECONDARY_TYPE_FORMAT_CONTROLS
+            )
             for character in label
         )
     ):
         raise StudioError(
             "secondary_type must be a nonblank metadata label of at most 200 "
-            "Unicode code points without control, surrogate, or line-separator "
-            "characters."
+            "Unicode code points without unsafe control, format, surrogate, or "
+            "line-separator characters."
         )
     return label
 
