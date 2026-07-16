@@ -46,6 +46,19 @@ class StateManagerTests(unittest.TestCase):
         for stage in STAGES[: STAGES.index(final_stage) + 1]:
             self.module.approve(self.project, stage)
 
+    def public_history(self, project: Path | None = None) -> list[Path]:
+        history = (project or self.project) / "history"
+        return sorted(path for path in history.iterdir() if not path.name.startswith("."))
+
+    def assert_hidden_history_is_safe_tombstones(self, project: Path | None = None) -> None:
+        history = (project or self.project) / "history"
+        for path in history.iterdir():
+            if not path.name.startswith("."):
+                continue
+            self.assertRegex(path.name, self.module._QUARANTINE_PATTERN)
+            self.assertTrue(path.is_dir())
+            self.assertEqual([], list(path.iterdir()))
+
     def test_exports_exact_stage_contract(self) -> None:
         self.assertEqual(STAGES, self.module.STAGES)
         for name in ("load_state", "save_state", "approve", "reopen", "status"):
@@ -158,7 +171,8 @@ class StateManagerTests(unittest.TestCase):
             with self.assertRaises(self.module.StudioError):
                 self.module.reopen(self.project, "brief", reason="rewrite")
         self.assertEqual(original, (self.project / "project.yaml").read_bytes())
-        self.assertEqual([], list(history.iterdir()))
+        self.assertEqual([], self.public_history())
+        self.assert_hidden_history_is_safe_tombstones()
 
     def test_post_commit_directory_fsync_failure_never_deletes_snapshot(self) -> None:
         self.module.approve(self.project, "brief")
@@ -210,8 +224,8 @@ class StateManagerTests(unittest.TestCase):
                         self.module.reopen(project, "brief", reason="rewrite")
 
                 state = self.module.status(project)
-                history_entries = list((project / "history").iterdir())
-                self.assertFalse(any(p.name.startswith(".") for p in history_entries))
+                history_entries = self.public_history(project)
+                self.assert_hidden_history_is_safe_tombstones(project)
                 self.assertFalse((project / self.module.JOURNAL_NAME).exists())
                 if boundary == "state-committed":
                     self.assertEqual("brief_pending", state["stage"])
@@ -254,7 +268,8 @@ class StateManagerTests(unittest.TestCase):
 
                 state = self.module.status(project)
                 self.assertFalse((project / self.module.JOURNAL_NAME).exists())
-                history = list((project / "history").iterdir())
+                history = self.public_history(project)
+                self.assert_hidden_history_is_safe_tombstones(project)
                 if boundary == "state-committed":
                     self.assertEqual("brief_pending", state["stage"])
                     self.assertEqual(1, len(history))
@@ -318,7 +333,8 @@ class StateManagerTests(unittest.TestCase):
         self.assertTrue((self.project / self.module.JOURNAL_NAME).is_file())
         self.assertEqual("research_pending", self.module.status(self.project)["stage"])
         self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
-        self.assertEqual([], list((self.project / "history").iterdir()))
+        self.assertEqual([], self.public_history())
+        self.assert_hidden_history_is_safe_tombstones()
 
     def test_recovery_resumes_partially_removed_bound_snapshot(self) -> None:
         self.module.approve(self.project, "brief")
@@ -339,7 +355,8 @@ class StateManagerTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.module.reopen(self.project, "brief", reason="rewrite")
         self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
-        self.assertEqual([], list(history.iterdir()))
+        self.assertEqual([], self.public_history())
+        self.assert_hidden_history_is_safe_tombstones()
 
     def test_recovery_remover_rejects_final_and_staging_live_swaps(self) -> None:
         for boundary, journal_key in (
@@ -410,6 +427,7 @@ class StateManagerTests(unittest.TestCase):
                 self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
 
     def test_atomic_quarantine_never_rmdirs_a_swapped_public_competitor(self) -> None:
+        self.assertFalse(hasattr(self.module, "_native_rmdir_at"))
         self.module.approve(self.project, "brief")
         project = self.project
         history = project / "history"
@@ -478,6 +496,21 @@ class StateManagerTests(unittest.TestCase):
             (displaced_metadata.st_dev, displaced_metadata.st_ino),
         )
         self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
+
+    def test_no_journal_recovery_ignores_empty_tombstone_but_rejects_nonempty(self) -> None:
+        history = self.project / "history"
+        empty = history / (".reopen-delete-" + "a" * 32)
+        empty.mkdir()
+        self.module.status(self.project)
+        self.assertTrue(empty.is_dir())
+
+        nonempty = history / (".reopen-delete-" + "b" * 32)
+        nonempty.mkdir()
+        marker = nonempty / "keep"
+        marker.write_text("keep", encoding="utf-8")
+        with self.assertRaises(self.module.StudioError):
+            self.module.status(self.project)
+        self.assertEqual("keep", marker.read_text(encoding="utf-8"))
 
     def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
         stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")
@@ -558,7 +591,7 @@ class StateManagerTests(unittest.TestCase):
         with self.assertRaises(self.module.StudioError):
             self.module.reopen(self.project, "brief", reason="rewrite")
         self.assertEqual(approved_state, state_path.read_bytes())
-        self.assertEqual([], list((self.project / "history").iterdir()))
+        self.assertEqual([], self.public_history())
 
     def test_rejects_untrusted_state_artifact_and_history_metadata_without_mutation(self) -> None:
         state_path = self.project / "project.yaml"
@@ -595,7 +628,7 @@ class StateManagerTests(unittest.TestCase):
             self.module.reopen(self.project, "brief", reason="rewrite")
         self.assertEqual(approved, state_path.read_bytes())
         hardlink.unlink()
-        self.assertEqual([], list(history.iterdir()))
+        self.assertEqual([], self.public_history())
 
     def test_rejects_malformed_and_oversized_state(self) -> None:
         state_path = self.project / "project.yaml"

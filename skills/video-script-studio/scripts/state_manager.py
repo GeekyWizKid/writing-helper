@@ -436,24 +436,6 @@ def _remove_flat_directory_at(
         raise
 
 
-def _native_rmdir_at(parent_fd: int, name: str) -> None:
-    """Remove an empty, randomly named quarantine without using os.rmdir."""
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        unlinkat = libc.unlinkat
-        unlinkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
-        unlinkat.restype = ctypes.c_int
-        at_removedir = 0x80 if sys.platform == "darwin" else 0x200
-        result = unlinkat(parent_fd, os.fsencode(name), at_removedir)
-    except (AttributeError, OSError) as exc:
-        raise StudioError(_UNSUPPORTED) from exc
-    if result != 0:
-        error_number = ctypes.get_errno()
-        raise StudioError("Could not remove the transaction quarantine.") from OSError(
-            error_number, os.strerror(error_number), name
-        )
-
-
 def _delete_quarantined_directory_at(
     parent_fd: int, name: str, expected_identity: tuple[int, int]
 ) -> None:
@@ -479,8 +461,11 @@ def _delete_quarantined_directory_at(
             if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
                 raise StudioError("Transaction data contains an unexpected directory.")
             os.unlink(child, dir_fd=descriptor)
-        # Keep the inode-bound descriptor open and re-check its pathname at the
-        # last possible point before unlinking the unpredictable quarantine.
+        # Keep the inode-bound descriptor open and re-check its pathname after
+        # deleting children.  The directory itself is intentionally retained:
+        # POSIX offers no portable conditional-rmdir-by-inode operation, so one
+        # empty hidden tombstone per rollback is the bounded cost of protecting
+        # same-UID projects from a final check-to-rmdir pathname replacement.
         opened = os.fstat(descriptor)
         linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (
@@ -489,12 +474,41 @@ def _delete_quarantined_directory_at(
             or (linked.st_dev, linked.st_ino) != expected_identity
         ):
             raise StudioError("Transaction directory changed during cleanup.")
-        _native_rmdir_at(parent_fd, name)
+        os.fsync(descriptor)
         os.fsync(parent_fd)
     except StudioError:
         raise
     except OSError as exc:
         raise StudioError("Could not clean transaction data safely.") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_empty_tombstone_at(parent_fd: int, name: str) -> None:
+    identity = _snapshot_identity_at(parent_fd, name)
+    if identity is None:
+        return
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            (opened.st_dev, opened.st_ino) != identity
+            or stat.S_ISLNK(linked.st_mode)
+            or (linked.st_dev, linked.st_ino) != identity
+            or os.listdir(descriptor)
+        ):
+            raise StudioError("A transaction tombstone is unsafe or nonempty.")
+    except StudioError:
+        raise
+    except OSError as exc:
+        raise StudioError("Could not verify the transaction tombstone.") from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -743,9 +757,7 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                     if identity is not None:
                         _remove_flat_directory_at(history_fd, name, identity)
                 elif _QUARANTINE_PATTERN.fullmatch(name):
-                    identity = _snapshot_identity_at(history_fd, name)
-                    if identity is not None:
-                        _delete_quarantined_directory_at(history_fd, name, identity)
+                    _verify_empty_tombstone_at(history_fd, name)
             return
 
         journal = _read_journal_at(project_fd)
@@ -804,9 +816,7 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                 if identity is not None:
                     _remove_flat_directory_at(history_fd, name, identity)
             elif _QUARANTINE_PATTERN.fullmatch(name):
-                identity = _snapshot_identity_at(history_fd, name)
-                if identity is not None:
-                    _delete_quarantined_directory_at(history_fd, name, identity)
+                _verify_empty_tombstone_at(history_fd, name)
     finally:
         os.close(history_fd)
 
