@@ -529,6 +529,49 @@ class ValidatePackTests(unittest.TestCase):
             "completion_digest_mismatch", completion["validation"]["error_codes"]
         )
 
+    def test_completed_pack_digest_binds_project_metadata_and_dispositions(self) -> None:
+        self.state.complete(self.project)
+        original = self.state.load_state(self.project)
+        mutations = (
+            ("title", lambda state: state["project"].__setitem__("title", "新标题")),
+            ("platform", lambda state: state["project"].__setitem__("platform", "新平台")),
+            ("profile", lambda state: state["project"].__setitem__("profile_id", "new-profile")),
+            ("date", lambda state: state["project"].__setitem__("date", "2026-07-18")),
+            ("secondary", lambda state: state["project"].__setitem__("secondary_type", "long-form")),
+            ("research", lambda state: state["research"].__setitem__("disposition", "required")),
+            ("sources", lambda state: state["sources"].__setitem__("disposition", "captured")),
+        )
+        for label, mutate in mutations:
+            with self.subTest(field=label):
+                changed = json.loads(json.dumps(original))
+                mutate(changed)
+                self.state.save_state(self.project, changed)
+                validation = self.validator.validate_pack(self.project)
+                self.assertIn("completion_digest_mismatch", validation["error_codes"])
+                completion = self.state.complete(self.project)
+                self.assertEqual("blocked", completion["status"])
+                self.assertIn(
+                    "completion_digest_mismatch",
+                    completion["validation"]["error_codes"],
+                )
+                self.state.save_state(self.project, original)
+
+    def test_precomplete_and_postcomplete_semantic_digest_are_identical(self) -> None:
+        with self.state._locked_project(self.project) as (_, project_fd):
+            state, state_bytes, state_digest = self.state._load_state_with_size_at(project_fd)
+            result, _, precomplete_digest = self.validator._validate_pack_at(
+                project_fd,
+                state=state,
+                state_byte_count=state_bytes,
+                state_digest=state_digest,
+                capture_fingerprint=True,
+            )
+        self.assertTrue(result["valid"])
+        self.state.complete(self.project)
+        completed = self.state.load_state(self.project)
+        self.assertEqual(precomplete_digest, completed["completion_digest"])
+        self.assertTrue(self.validator.validate_pack(self.project)["valid"])
+
     def test_missing_ordinary_artifact_blocks_completion_without_raising(self) -> None:
         (self.project / "assets.md").unlink()
         before = (self.project / "project.yaml").read_bytes()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -669,7 +670,9 @@ def _pack_fingerprint_at(project_fd: int) -> tuple[Any, ...]:
     return top_level, tuple(file_fingerprints), tuple(history_fingerprints)
 
 
-def _completion_digest_from_fingerprint(fingerprint: tuple[Any, ...]) -> str:
+def _completion_digest_from_fingerprint(
+    fingerprint: tuple[Any, ...], state: dict[str, Any]
+) -> str:
     top_level, files, history = fingerprint
     semantic_history: list[Any] = []
     for entry in history:
@@ -686,6 +689,10 @@ def _completion_digest_from_fingerprint(fingerprint: tuple[Any, ...]) -> str:
         "artifacts": [(name, digest) for name, digest in files if name != "project.yaml"],
         "history": semantic_history,
     }
+    semantic_state = copy.deepcopy(state)
+    semantic_state["stage"] = "complete"
+    semantic_state["completion_digest"] = None
+    semantic["state"] = semantic_state
     payload = json.dumps(
         semantic,
         ensure_ascii=False,
@@ -717,7 +724,6 @@ def _validate_pack_at(
         project_fd, problems, byte_budget=MAX_PACK_BYTES - pack_bytes
     )
     read_fingerprint = (top_level, file_fingerprints, history_fingerprint)
-    semantic_digest = _completion_digest_from_fingerprint(read_fingerprint)
 
     parsed_state = state
     if parsed_state is None and "project.yaml" in files:
@@ -725,6 +731,7 @@ def _validate_pack_at(
             parsed_state = _validate_state(parse_state_yaml(files["project.yaml"]))
         except StudioError:
             problems.add("invalid_state")
+            parsed_state = None
     route: str | None = None
     if parsed_state is not None:
         try:
@@ -738,6 +745,13 @@ def _validate_pack_at(
                     problems.add(f"{stage}_not_approved", f"The {stage} approval is not approved.")
         except StudioError:
             problems.add("invalid_state")
+            parsed_state = None
+
+    semantic_digest = (
+        _completion_digest_from_fingerprint(read_fingerprint, parsed_state)
+        if parsed_state is not None
+        else ""
+    )
 
     _validate_artifacts(files, problems)
     _validate_headings(files, route, problems)
