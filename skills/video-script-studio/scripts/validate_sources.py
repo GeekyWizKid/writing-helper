@@ -25,6 +25,7 @@ BODY_STATUSES = ("full-text", "search-snippet", "metadata-only", "unavailable")
 _CLAIM_ID = re.compile(r"^C\d{2}$")
 _SOURCE_ID = re.compile(r"^S\d{2}$")
 _SCRIPT_MARKER = re.compile(r"\[(C\d+)\]")
+_COMMUNITY_ONLY_ALLOWED_TYPES = ("audience-language", "anecdote")
 _REQUIRED_MANIFEST_FIELDS = (
     "schema_version",
     "research_required",
@@ -255,8 +256,12 @@ def validate(manifest: dict, script_text: str = "") -> dict:
             )
             if not complete:
                 problems.add("incomplete_claim_support")
-            if referenced and all(source.get("level") == "community" for source in referenced):
-                problems.add("community_only_factual_claim")
+        if (
+            claim_type not in _COMMUNITY_ONLY_ALLOWED_TYPES
+            and referenced
+            and all(source.get("level") == "community" for source in referenced)
+        ):
+            problems.add("community_only_factual_claim")
 
     markers = _SCRIPT_MARKER.findall(script_text)
     exact_markers = [marker for marker in markers if _CLAIM_ID.fullmatch(marker)]

@@ -197,6 +197,18 @@ class ValidateSourcesTests(unittest.TestCase):
         manifest["sources"][0]["level"] = "community"
         self.assertIn("community_only_factual_claim", validate(manifest, "[C01]")["error_codes"])
 
+    def test_rejects_community_only_support_for_every_non_exempt_claim_type(self):
+        for claim_type in ("analysis", "opinion", "unknown"):
+            manifest = valid_manifest()
+            manifest["sources"][0]["level"] = "community"
+            manifest["claims"][0]["claim_type"] = claim_type
+            with self.subTest(claim_type=claim_type):
+                self.assertIn(
+                    "community_only_factual_claim",
+                    validate(manifest, "[C01]")["error_codes"],
+                )
+
+    def test_allows_community_only_support_only_for_exempt_claim_types(self):
         for allowed_type in ("audience-language", "anecdote"):
             manifest = valid_manifest()
             manifest["sources"][0]["level"] = "community"
