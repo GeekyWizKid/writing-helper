@@ -234,6 +234,13 @@ class ValidatePackTests(unittest.TestCase):
         self.assertIn("missing_route_anchor", result["error_codes"])
         self.assertNotIn("unresolved_placeholder", result["error_codes"])
 
+    def test_cr_only_fence_lines_preserve_line_boundaries(self) -> None:
+        visible = self.validator._visible_markdown(
+            "before\r```text\rTODO\r````\rafter\r"
+        )
+        self.assertNotIn("TODO", visible)
+        self.assertEqual(5, visible.count("\r"))
+
     def test_bad_sources_and_review_contracts_propagate_stable_codes(self) -> None:
         self.write("script.md", (self.project / "script.md").read_text() + "\n[C01]\n")
         result = self.validator.validate_pack(self.project)
@@ -535,6 +542,23 @@ class ValidatePackTests(unittest.TestCase):
                 self.write("publish.md", "# Publish\n\n验证后被替换的内容。\n")
 
         with mock.patch.object(self.state, "_completion_boundary", side_effect=mutate_after_validation):
+            result = self.state.complete(self.project)
+        self.assertEqual("blocked", result["status"])
+        self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
+        self.assertEqual(before, (self.project / "project.yaml").read_bytes())
+
+    def test_completion_baseline_precedes_state_load_and_validation_reads(self) -> None:
+        before = (self.project / "project.yaml").read_bytes()
+        real_load = self.state._load_state_with_size_at
+
+        def mutate_during_state_load(project_fd: int):
+            loaded = real_load(project_fd)
+            self.write("publish.md", "# Publish\n\n状态读取期间被替换但仍属有效的内容。\n")
+            return loaded
+
+        with mock.patch.object(
+            self.state, "_load_state_with_size_at", side_effect=mutate_during_state_load
+        ):
             result = self.state.complete(self.project)
         self.assertEqual("blocked", result["status"])
         self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])

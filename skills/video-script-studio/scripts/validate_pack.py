@@ -95,7 +95,7 @@ SCRIPT_HEADINGS = (
 _ALLOWED_TOP_LEVEL = frozenset((*REQUIRED_FILES, "history", ".video-script-studio-state.lock"))
 _PLACEHOLDER = re.compile(r"(?<![A-Za-z0-9_])(?:TBD|TODO|FIXME)(?![A-Za-z0-9_])", re.I)
 _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*(?:\r?\n)?$")
+_FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*(?:(?:\r\n|\r|\n))?$")
 _HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
 _REVIEW_KEYS = frozenset(
     ("schema_version", "passed", "total_score", "core_dimensions", "base_gates", "revision_count")
@@ -210,6 +210,14 @@ def _strip_fenced_blocks(text: str) -> str:
     visible: list[str] = []
     fence_character: str | None = None
     fence_length = 0
+
+    def line_ending(line: str) -> str:
+        if line.endswith("\r\n"):
+            return "\r\n"
+        if line.endswith(("\n", "\r")):
+            return line[-1]
+        return ""
+
     for line in text.splitlines(keepends=True):
         if fence_character is None:
             opening = _FENCE_OPEN.match(line)
@@ -217,8 +225,7 @@ def _strip_fenced_blocks(text: str) -> str:
                 marker = opening.group(1)
                 fence_character = marker[0]
                 fence_length = len(marker)
-                if line.endswith("\n"):
-                    visible.append("\n")
+                visible.append(line_ending(line))
                 continue
             visible.append(line)
             continue
@@ -228,8 +235,7 @@ def _strip_fenced_blocks(text: str) -> str:
             if marker[0] == fence_character and len(marker) >= fence_length:
                 fence_character = None
                 fence_length = 0
-        if line.endswith("\n"):
-            visible.append("\n")
+        visible.append(line_ending(line))
     return "".join(visible)
 
 
@@ -642,8 +648,7 @@ def _validate_pack_at(
     *,
     state: dict[str, Any] | None = None,
     state_byte_count: int = 0,
-    capture_fingerprint: bool = False,
-) -> Any:
+) -> dict[str, Any]:
     """Validate while the caller holds the trusted project lock."""
     problems = _Problems()
     files, checked, pack_bytes = _snapshot_files_at(
@@ -691,8 +696,6 @@ def _validate_pack_at(
         "source_count": source_count,
         "claim_count": claim_count,
     }
-    if capture_fingerprint:
-        return result, (_pack_fingerprint_at(project_fd) if result["valid"] else None)
     return result
 
 

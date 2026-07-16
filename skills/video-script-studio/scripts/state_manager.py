@@ -978,18 +978,19 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
 def complete(project: Path) -> dict[str, Any]:
     """Atomically mark a fully approved, valid production pack complete."""
     with _locked_project(project) as (_, project_fd):
+        # Import lazily to keep module loading acyclic. The baseline is the
+        # first pack read after lock acquisition/recovery, before state or
+        # artifact validation can observe a different version.
+        from validate_pack import _pack_fingerprint_at, _validate_pack_at
+
+        fingerprint = _pack_fingerprint_at(project_fd)
         state, state_byte_count = _load_state_with_size_at(project_fd)
         if state["stage"] == "complete":
             return {"stage": "complete", "status": "already_complete"}
-        # Import lazily to keep module loading acyclic.  The internal validator
-        # consumes the already-read state under this same lock.
-        from validate_pack import _pack_fingerprint_at, _validate_pack_at
-
-        validation, fingerprint = _validate_pack_at(
+        validation = _validate_pack_at(
             project_fd,
             state=state,
             state_byte_count=state_byte_count,
-            capture_fingerprint=True,
         )
         if not validation["valid"]:
             return {
