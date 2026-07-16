@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import builtins
+import importlib.util
+import io
 import json
 import os
 import stat
@@ -8,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -40,6 +44,88 @@ class InitProjectTests(unittest.TestCase):
                 Path(directory), "你好 Video_2026!", "short-form", date="2026-07-17"
             )
             self.assertEqual("2026-07-17-你好-Video-2026", Path(result["path"]).name)
+
+    def test_module_imports_when_fcntl_is_unavailable(self) -> None:
+        module_path = SKILL_ROOT / "scripts" / "init_project.py"
+        spec = importlib.util.spec_from_file_location(
+            "video_script_studio_init_project_without_fcntl", module_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader if spec is not None else None)
+        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        original_import = builtins.__import__
+
+        def import_without_fcntl(
+            name: str,
+            globals: dict | None = None,
+            locals: dict | None = None,
+            fromlist: tuple = (),
+            level: int = 0,
+        ):
+            if name == "fcntl":
+                raise ImportError("fcntl unavailable")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch.object(
+            builtins, "__import__", side_effect=import_without_fcntl
+        ):
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+        self.assertIsNone(module.fcntl)
+
+    def test_unsupported_platform_capabilities_fail_before_root_creation(self) -> None:
+        expected = (
+            "Project initialization requires POSIX Darwin or Linux with fcntl "
+            "and getuid support."
+        )
+        scenarios = (
+            ("missing fcntl", mock.patch.object(self.module, "fcntl", None)),
+            ("missing getuid", mock.patch.object(self.module.os, "getuid", None)),
+            (
+                "unsupported platform",
+                mock.patch.object(self.module.sys, "platform", "win32"),
+            ),
+        )
+        for scenario, patcher in scenarios:
+            with self.subTest(scenario=scenario):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "must-not-exist"
+                    with patcher:
+                        with self.assertRaises(self.module.StudioError) as raised:
+                            self.module.init_project(
+                                root, "Unsupported", "short-form", date="2026-07-17"
+                            )
+                    self.assertEqual(expected, str(raised.exception))
+                    self.assertFalse(root.exists())
+
+    def test_main_reports_unsupported_platform_as_safe_json_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "must-not-exist"
+            stdout = io.StringIO()
+            with mock.patch.object(self.module, "fcntl", None), redirect_stdout(stdout):
+                exit_code = self.module.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--title",
+                        "Unsupported",
+                        "--primary-type",
+                        "short-form",
+                    ]
+                )
+
+            self.assertEqual(2, exit_code)
+            self.assertEqual(
+                {
+                    "error": (
+                        "Project initialization requires POSIX Darwin or Linux "
+                        "with fcntl and getuid support."
+                    ),
+                    "status": "error",
+                },
+                json.loads(stdout.getvalue()),
+            )
+            self.assertFalse(root.exists())
 
     def test_returns_exact_public_creation_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
-import fcntl
 import json
 import os
 import shutil
@@ -16,6 +15,11 @@ from contextlib import contextmanager
 from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised through import simulation
+    fcntl = None  # type: ignore[assignment]
 
 _SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 if str(_SCRIPT_DIRECTORY) not in sys.path:
@@ -53,6 +57,10 @@ REQUIRED_ARTIFACTS = (
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "assets" / "project-state-template.yaml"
 _TYPE_SET = frozenset(PRIMARY_TYPES)
+_UNSUPPORTED_PLATFORM_MESSAGE = (
+    "Project initialization requires POSIX Darwin or Linux with fcntl and getuid "
+    "support."
+)
 
 
 def _text(value: Any, field: str, *, optional: bool = False) -> str | None:
@@ -77,6 +85,14 @@ def _project_date(value: str | None) -> str:
     return value
 
 
+def _require_supported_platform() -> None:
+    """Reject unsupported project platforms before any filesystem mutation."""
+    getuid = getattr(os, "getuid", None)
+    supported_os = sys.platform == "darwin" or sys.platform.startswith("linux")
+    if not supported_os or fcntl is None or not callable(getuid):
+        raise StudioError(_UNSUPPORTED_PLATFORM_MESSAGE)
+
+
 def _validate_root(root: Path) -> Path:
     if not isinstance(root, Path):
         raise StudioError("root must be a filesystem path.")
@@ -89,7 +105,10 @@ def _validate_root(root: Path) -> Path:
             raise StudioError("The project root must not be a symbolic link.")
         if not stat.S_ISDIR(root_stat.st_mode):
             raise StudioError("The project root must be a directory.")
-        if root_stat.st_uid != os.getuid() or stat.S_IMODE(root_stat.st_mode) & 0o022:
+        getuid = getattr(os, "getuid", None)
+        if not callable(getuid):
+            raise StudioError(_UNSUPPORTED_PLATFORM_MESSAGE)
+        if root_stat.st_uid != getuid() or stat.S_IMODE(root_stat.st_mode) & 0o022:
             raise StudioError("The project root has unsafe ownership or permissions.")
         resolved = root.resolve(strict=True)
     except OSError as exc:
@@ -155,20 +174,23 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
 @contextmanager
 def _locked_root(root: Path):
     """Serialize candidate selection and publication for a trusted root."""
+    lock_api = fcntl
+    if lock_api is None:
+        raise StudioError(_UNSUPPORTED_PLATFORM_MESSAGE)
     lock_path = root / ".video-script-studio.lock"
     descriptor: int | None = None
     try:
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(lock_path, flags, 0o600)
         os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        lock_api.flock(descriptor, lock_api.LOCK_EX)
         yield
     except OSError as exc:
         raise StudioError("Could not lock the project root.") from exc
     finally:
         if descriptor is not None:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                lock_api.flock(descriptor, lock_api.LOCK_UN)
             finally:
                 os.close(descriptor)
 
@@ -201,6 +223,7 @@ def init_project(
         raise StudioError("secondary_type is not supported.")
 
     project_date = _project_date(date)
+    _require_supported_platform()
     root = _validate_root(root)
     base_name = f"{project_date}-{safe_slug(title)}"
     with _locked_root(root):
