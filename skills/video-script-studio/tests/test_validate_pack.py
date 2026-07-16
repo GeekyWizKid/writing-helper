@@ -211,6 +211,29 @@ class ValidatePackTests(unittest.TestCase):
         self.write("outline.md", "# Outline\n\n<!-- ## 中段推进\n伪内容 -->\n```\n## 结尾兑现\n伪内容\n```\n")
         self.assertIn("missing_route_anchor", self.validator.validate_pack(self.project)["error_codes"])
 
+    def test_unclosed_and_long_closed_fences_hide_fake_content_through_eof(self) -> None:
+        for closing in ("", "````"):
+            with self.subTest(closing=closing or "unclosed"):
+                self.make_valid()
+                self.write(
+                    "outline.md",
+                    "# Outline\n\n```text\n## 中段推进\n伪造推进。\n"
+                    "## 结尾兑现\n伪造兑现。\nTODO\n" + closing + "\n",
+                )
+                result = self.validator.validate_pack(self.project)
+                self.assertIn("missing_route_anchor", result["error_codes"])
+                self.assertNotIn("unresolved_placeholder", result["error_codes"])
+
+    def test_unclosed_multiline_html_comment_hides_fake_heading_and_placeholder(self) -> None:
+        self.write(
+            "outline.md",
+            "# Outline\n\n真实说明。\n<!-- 尚未闭合\n## 中段推进\n伪造。\n"
+            "## 结尾兑现\n伪造。\nFIXME\n",
+        )
+        result = self.validator.validate_pack(self.project)
+        self.assertIn("missing_route_anchor", result["error_codes"])
+        self.assertNotIn("unresolved_placeholder", result["error_codes"])
+
     def test_bad_sources_and_review_contracts_propagate_stable_codes(self) -> None:
         self.write("script.md", (self.project / "script.md").read_text() + "\n[C01]\n")
         result = self.validator.validate_pack(self.project)
@@ -405,6 +428,41 @@ class ValidatePackTests(unittest.TestCase):
         (self.project / "history" / "unknown").mkdir()
         self.assertIn("invalid_history_entry", self.validator.validate_pack(self.project)["error_codes"])
 
+    def test_history_error_never_echoes_untrusted_entry_name(self) -> None:
+        secret = "SECRET-history-entry"
+        (self.project / "history" / secret).mkdir()
+        result = self.validator.validate_pack(self.project)
+        self.assertIn("invalid_history_entry", result["error_codes"])
+        self.assertNotIn(secret, json.dumps(result, ensure_ascii=False))
+
+    def test_history_entry_count_and_aggregate_bytes_are_bounded(self) -> None:
+        history = self.project / "history"
+        for index in range(self.validator.MAX_HISTORY_ENTRIES + 1):
+            (history / f"unknown-{index:04d}").mkdir()
+        with self.assertRaises(self.validator.StudioError):
+            self.validator.validate_pack(self.project)
+
+        for entry in history.iterdir():
+            entry.rmdir()
+        self.write("script.md", (self.project / "script.md").read_text() + "x" * (9 * 1024 * 1024))
+        for index in range(4):
+            self.state.reopen(self.project, "script", f"归档大型脚本 {index}")
+            self.state.approve(self.project, "script")
+        with self.assertRaises(self.validator.StudioError):
+            self.validator.validate_pack(self.project)
+
+    def test_history_manifest_artifacts_must_match_stage_and_downstream_only(self) -> None:
+        self.state.reopen(self.project, "outline", "重写大纲")
+        self.state.approve(self.project, "outline")
+        self.state.approve(self.project, "script")
+        snapshot = next(path for path in (self.project / "history").iterdir() if not path.name.startswith("."))
+        manifest_path = snapshot / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        (snapshot / "brief.md").write_bytes((self.project / "brief.md").read_bytes())
+        manifest["affected_artifacts"] = sorted([*manifest["affected_artifacts"], "brief.md"])
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertIn("invalid_history_snapshot", self.validator.validate_pack(self.project)["error_codes"])
+
     def test_valid_reopen_snapshot_is_accepted_and_tampering_is_detected(self) -> None:
         self.state.reopen(self.project, "script", "发现需修改的脚本")
         self.state.approve(self.project, "script")
@@ -467,6 +525,19 @@ class ValidatePackTests(unittest.TestCase):
         with mock.patch.object(self.state.os, "rename", side_effect=fail_state):
             with self.assertRaises(self.state.StudioError):
                 self.state.complete(self.project)
+        self.assertEqual(before, (self.project / "project.yaml").read_bytes())
+
+    def test_completion_reverifies_pack_after_validation_before_publication(self) -> None:
+        before = (self.project / "project.yaml").read_bytes()
+
+        def mutate_after_validation(name: str) -> None:
+            if name == "validated":
+                self.write("publish.md", "# Publish\n\n验证后被替换的内容。\n")
+
+        with mock.patch.object(self.state, "_completion_boundary", side_effect=mutate_after_validation):
+            result = self.state.complete(self.project)
+        self.assertEqual("blocked", result["status"])
+        self.assertIn("pack_changed_during_completion", result["validation"]["error_codes"])
         self.assertEqual(before, (self.project / "project.yaml").read_bytes())
 
     def test_failed_completion_does_not_change_published_state_bytes(self) -> None:

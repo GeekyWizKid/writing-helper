@@ -865,6 +865,10 @@ def _transaction_boundary(name: str) -> None:
     """Test seam for simulating abrupt termination at durable boundaries."""
 
 
+def _completion_boundary(name: str) -> None:
+    """Test seam between pack validation and completion publication."""
+
+
 def _build_target_state(state: dict[str, Any], stage: str) -> dict[str, Any]:
     target = copy.deepcopy(state)
     index = STAGES.index(stage)
@@ -979,10 +983,13 @@ def complete(project: Path) -> dict[str, Any]:
             return {"stage": "complete", "status": "already_complete"}
         # Import lazily to keep module loading acyclic.  The internal validator
         # consumes the already-read state under this same lock.
-        from validate_pack import _validate_pack_at
+        from validate_pack import _pack_fingerprint_at, _validate_pack_at
 
-        validation = _validate_pack_at(
-            project_fd, state=state, state_byte_count=state_byte_count
+        validation, fingerprint = _validate_pack_at(
+            project_fd,
+            state=state,
+            state_byte_count=state_byte_count,
+            capture_fingerprint=True,
         )
         if not validation["valid"]:
             return {
@@ -990,8 +997,22 @@ def complete(project: Path) -> dict[str, Any]:
                 "status": "blocked",
                 "validation": validation,
             }
+        _completion_boundary("validated")
         target = copy.deepcopy(state)
         target["stage"] = "complete"
+        # The lock is advisory. Cooperative writers serialize with us; this
+        # last-moment fingerprint check also detects ordinary non-cooperative
+        # changes in the validation-to-publication window.
+        if fingerprint != _pack_fingerprint_at(project_fd):
+            changed = copy.deepcopy(validation)
+            changed["valid"] = False
+            changed["error_codes"].append("pack_changed_during_completion")
+            changed["errors"].append("The production pack changed during completion.")
+            return {
+                "stage": state["stage"],
+                "status": "blocked",
+                "validation": changed,
+            }
         _save_state_at(project_fd, target)
         return {"stage": "complete", "status": "completed", "validation": validation}
 

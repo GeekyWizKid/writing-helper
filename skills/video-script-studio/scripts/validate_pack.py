@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -47,6 +48,8 @@ ARTIFACT_FILES = (
 REQUIRED_FILES = ("project.yaml", *ARTIFACT_FILES)
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_PACK_BYTES = 32 * 1024 * 1024
+MAX_HISTORY_ENTRIES = 256
+MAX_HISTORY_SNAPSHOT_ENTRIES = len(STAGES) + 1
 
 BASE_GATES = (
     "factual_integrity",
@@ -91,8 +94,8 @@ SCRIPT_HEADINGS = (
 
 _ALLOWED_TOP_LEVEL = frozenset((*REQUIRED_FILES, "history", ".video-script-studio-state.lock"))
 _PLACEHOLDER = re.compile(r"(?<![A-Za-z0-9_])(?:TBD|TODO|FIXME)(?![A-Za-z0-9_])", re.I)
-_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,}).*?^[ \t]*\1[ \t]*$", re.M | re.S)
-_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*(?:\r?\n)?$")
 _HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
 _REVIEW_KEYS = frozenset(
     ("schema_version", "passed", "total_score", "core_dimensions", "base_gates", "revision_count")
@@ -137,6 +140,23 @@ class _Problems:
         self.errors.append(message or _MESSAGES.get(code, code.replace("_", " ")))
 
 
+def _bounded_directory_names(
+    directory_fd: int, limit: int, error_message: str
+) -> list[str]:
+    names: list[str] = []
+    try:
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                if len(names) >= limit:
+                    raise StudioError(error_message)
+                names.append(entry.name)
+    except StudioError:
+        raise
+    except OSError as exc:
+        raise StudioError(error_message) from exc
+    return names
+
+
 def _strict_json(text: str) -> Any:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         value: dict[str, Any] = {}
@@ -165,14 +185,61 @@ def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return value, "".join(lines[end + 1 :])
 
 
+def _strip_html_comments(text: str) -> str:
+    visible: list[str] = []
+    index = 0
+    in_comment = False
+    while index < len(text):
+        if not in_comment and text.startswith("<!--", index):
+            in_comment = True
+            index += 4
+        elif in_comment and text.startswith("-->", index):
+            in_comment = False
+            index += 3
+        else:
+            character = text[index]
+            if not in_comment:
+                visible.append(character)
+            elif character in "\r\n":
+                visible.append(character)
+            index += 1
+    return "".join(visible)
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    visible: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for line in text.splitlines(keepends=True):
+        if fence_character is None:
+            opening = _FENCE_OPEN.match(line)
+            if opening:
+                marker = opening.group(1)
+                fence_character = marker[0]
+                fence_length = len(marker)
+                if line.endswith("\n"):
+                    visible.append("\n")
+                continue
+            visible.append(line)
+            continue
+        closing = _FENCE_CLOSE.match(line)
+        if closing:
+            marker = closing.group(1)
+            if marker[0] == fence_character and len(marker) >= fence_length:
+                fence_character = None
+                fence_length = 0
+        if line.endswith("\n"):
+            visible.append("\n")
+    return "".join(visible)
+
+
 def _visible_markdown(text: str, *, remove_frontmatter: bool = False) -> str:
     if remove_frontmatter:
         try:
             _, text = _frontmatter(text)
         except ValueError:
             pass
-    text = _COMMENT.sub("", text)
-    return _FENCE.sub("", text)
+    return _strip_fenced_blocks(_strip_html_comments(text))
 
 
 def _meaningful(text: str) -> bool:
@@ -198,7 +265,7 @@ def _snapshot_files_at(
     *,
     state_already_read: bool = False,
     initial_byte_count: int = 0,
-) -> tuple[dict[str, str], int]:
+) -> tuple[dict[str, str], int, int]:
     try:
         names = set(os.listdir(project_fd))
     except OSError as exc:
@@ -231,10 +298,12 @@ def _snapshot_files_at(
             files[name] = raw.decode("utf-8")
         except UnicodeError as exc:
             raise StudioError(f"The {name} file is not valid UTF-8.") from exc
-    return files, len(files) + (1 if state_already_read else 0)
+    return files, len(files) + (1 if state_already_read else 0), total
 
 
-def _validate_history_at(project_fd: int, problems: _Problems) -> None:
+def _validate_history_at(
+    project_fd: int, problems: _Problems, *, byte_budget: int
+) -> None:
     try:
         history_fd = _open_history(project_fd)
     except StudioError:
@@ -246,7 +315,15 @@ def _validate_history_at(project_fd: int, problems: _Problems) -> None:
             return
         raise
     try:
-        for name in sorted(os.listdir(history_fd)):
+        history_names = sorted(
+            _bounded_directory_names(
+                history_fd,
+                MAX_HISTORY_ENTRIES,
+                "Project history exceeds the entry limit.",
+            )
+        )
+        history_bytes = 0
+        for name in history_names:
             try:
                 entry = os.stat(name, dir_fd=history_fd, follow_symlinks=False)
             except OSError as exc:
@@ -257,7 +334,7 @@ def _validate_history_at(project_fd: int, problems: _Problems) -> None:
                 _verify_empty_tombstone_at(history_fd, name)
                 continue
             if not _SNAPSHOT_PATTERN.fullmatch(name):
-                problems.add("invalid_history_entry", f"Invalid history entry: {name}.")
+                problems.add("invalid_history_entry")
                 continue
             descriptor: int | None = None
             try:
@@ -273,11 +350,20 @@ def _validate_history_at(project_fd: int, problems: _Problems) -> None:
                     or stat.S_IMODE(metadata.st_mode) & 0o022
                 ):
                     raise StudioError("A public history snapshot is unsafe.")
-                entries = set(os.listdir(descriptor))
+                entries = set(
+                    _bounded_directory_names(
+                        descriptor,
+                        MAX_HISTORY_SNAPSHOT_ENTRIES,
+                        "A history snapshot exceeds the entry limit.",
+                    )
+                )
                 if "manifest.json" not in entries:
                     problems.add("invalid_history_snapshot")
                     continue
                 raw = _read_regular_at(descriptor, "manifest.json", 1024 * 1024, "history manifest")
+                history_bytes += len(raw)
+                if history_bytes > byte_budget:
+                    raise StudioError("The project and history exceed the aggregate size limit.")
                 try:
                     manifest = _strict_json(raw.decode("utf-8"))
                 except (UnicodeError, ValueError):
@@ -305,8 +391,21 @@ def _validate_history_at(project_fd: int, problems: _Problems) -> None:
                 ):
                     problems.add("invalid_history_snapshot")
                     continue
+                allowed_artifacts = {
+                    STAGE_FILES[item] for item in STAGES[STAGES.index(stage) :]
+                }
+                if not set(affected) <= allowed_artifacts:
+                    problems.add("invalid_history_snapshot")
+                    continue
                 for artifact in affected:
-                    _read_regular_at(descriptor, artifact, MAX_FILE_BYTES, "history artifact")
+                    archived = _read_regular_at(
+                        descriptor, artifact, MAX_FILE_BYTES, "history artifact"
+                    )
+                    history_bytes += len(archived)
+                    if history_bytes > byte_budget:
+                        raise StudioError(
+                            "The project and history exceed the aggregate size limit."
+                        )
             except StudioError:
                 raise
             except OSError as exc:
@@ -454,21 +553,108 @@ def _validate_sources(text: str | None, script: str, problems: _Problems) -> tup
     return result["source_count"], result["claim_count"], list(result.get("warnings", []))
 
 
+def _pack_fingerprint_at(project_fd: int) -> tuple[Any, ...]:
+    """Capture bounded trusted topology and content for completion revalidation."""
+    try:
+        top_level = tuple(sorted(os.listdir(project_fd)))
+    except OSError as exc:
+        raise StudioError("Could not fingerprint the production pack safely.") from exc
+    if set(top_level) != _ALLOWED_TOP_LEVEL:
+        raise StudioError("The project topology changed during completion.")
+
+    total = 0
+    file_fingerprints: list[tuple[str, str]] = []
+    for name in REQUIRED_FILES:
+        raw = _read_regular_at(project_fd, name, MAX_FILE_BYTES, name)
+        total += len(raw)
+        if total > MAX_PACK_BYTES:
+            raise StudioError("The production pack exceeds the aggregate size limit.")
+        file_fingerprints.append((name, hashlib.sha256(raw).hexdigest()))
+
+    history_fd = _open_history(project_fd)
+    history_fingerprints: list[Any] = []
+    try:
+        history_names = sorted(
+            _bounded_directory_names(
+                history_fd,
+                MAX_HISTORY_ENTRIES,
+                "Project history exceeds the entry limit.",
+            )
+        )
+        for name in history_names:
+            if _QUARANTINE_PATTERN.fullmatch(name):
+                _verify_empty_tombstone_at(history_fd, name)
+                metadata = os.stat(name, dir_fd=history_fd, follow_symlinks=False)
+                history_fingerprints.append(
+                    (name, "tombstone", metadata.st_dev, metadata.st_ino)
+                )
+                continue
+            descriptor: int | None = None
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=history_fd,
+                )
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(metadata.st_mode) & 0o022
+                ):
+                    raise StudioError("A history entry changed during completion.")
+                children: list[tuple[str, str]] = []
+                child_names = sorted(
+                    _bounded_directory_names(
+                        descriptor,
+                        MAX_HISTORY_SNAPSHOT_ENTRIES,
+                        "A history snapshot exceeds the entry limit.",
+                    )
+                )
+                for child in child_names:
+                    limit = 1024 * 1024 if child == "manifest.json" else MAX_FILE_BYTES
+                    raw = _read_regular_at(descriptor, child, limit, "history content")
+                    total += len(raw)
+                    if total > MAX_PACK_BYTES:
+                        raise StudioError(
+                            "The project and history exceed the aggregate size limit."
+                        )
+                    children.append((child, hashlib.sha256(raw).hexdigest()))
+                history_fingerprints.append(
+                    (name, metadata.st_dev, metadata.st_ino, tuple(children))
+                )
+            except StudioError:
+                raise
+            except OSError as exc:
+                raise StudioError("Could not fingerprint history safely.") from exc
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    finally:
+        os.close(history_fd)
+    return top_level, tuple(file_fingerprints), tuple(history_fingerprints)
+
+
 def _validate_pack_at(
     project_fd: int,
     *,
     state: dict[str, Any] | None = None,
     state_byte_count: int = 0,
-) -> dict[str, Any]:
+    capture_fingerprint: bool = False,
+) -> Any:
     """Validate while the caller holds the trusted project lock."""
     problems = _Problems()
-    files, checked = _snapshot_files_at(
+    files, checked, pack_bytes = _snapshot_files_at(
         project_fd,
         problems,
         state_already_read=state is not None,
         initial_byte_count=state_byte_count,
     )
-    _validate_history_at(project_fd, problems)
+    _validate_history_at(
+        project_fd, problems, byte_budget=MAX_PACK_BYTES - pack_bytes
+    )
 
     parsed_state = state
     if parsed_state is None and "project.yaml" in files:
@@ -496,7 +682,7 @@ def _validate_pack_at(
     source_count, claim_count, warnings = _validate_sources(
         files.get("sources.md"), files.get("script.md", ""), problems
     )
-    return {
+    result = {
         "valid": not problems.codes,
         "errors": problems.errors,
         "warnings": warnings,
@@ -505,6 +691,9 @@ def _validate_pack_at(
         "source_count": source_count,
         "claim_count": claim_count,
     }
+    if capture_fingerprint:
+        return result, (_pack_fingerprint_at(project_fd) if result["valid"] else None)
+    return result
 
 
 def validate_pack(project: Path) -> dict[str, Any]:
