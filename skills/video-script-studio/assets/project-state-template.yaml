@@ -1,0 +1,28 @@
+approvals:
+  assets: "pending"
+  brief: "pending"
+  concepts: "pending"
+  outline: "pending"
+  publish: "pending"
+  research: "pending"
+  review: "pending"
+  script: "pending"
+  sources: "pending"
+  storyboard: "pending"
+artifacts:
+  assets: "assets.md"
+  brief: "brief.md"
+  concepts: "concepts.md"
+  outline: "outline.md"
+  publish: "publish.md"
+  research: "research.md"
+  review: "review.md"
+  script: "script.md"
+  sources: "sources.md"
+  storyboard: "storyboard.md"
+research:
+  disposition: "undecided"
+schema_version: "1"
+sources:
+  disposition: "undecided"
+stage: "brief_pending"
