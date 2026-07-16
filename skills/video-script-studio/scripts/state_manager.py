@@ -405,7 +405,9 @@ def _entry_exists_at(directory_fd: int, name: str) -> bool:
         raise StudioError("Could not inspect transaction data safely.") from exc
 
 
-def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
+def _remove_flat_directory_at(
+    parent_fd: int, name: str, expected_identity: tuple[int, int]
+) -> None:
     descriptor: int | None = None
     try:
         descriptor = os.open(
@@ -413,13 +415,29 @@ def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent_fd,
         )
+        opened = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            (opened.st_dev, opened.st_ino) != expected_identity
+            or stat.S_ISLNK(linked.st_mode)
+            or (linked.st_dev, linked.st_ino) != expected_identity
+        ):
+            raise StudioError("Transaction directory identity changed before cleanup.")
         for child in os.listdir(descriptor):
             metadata = os.stat(child, dir_fd=descriptor, follow_symlinks=False)
             if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
                 raise StudioError("Transaction data contains an unexpected directory.")
             os.unlink(child, dir_fd=descriptor)
-        os.close(descriptor)
-        descriptor = None
+        # Keep the inode-bound descriptor open and re-check its pathname at the
+        # last possible point before POSIX's pathname-based rmdir call.
+        opened = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            (opened.st_dev, opened.st_ino) != expected_identity
+            or stat.S_ISLNK(linked.st_mode)
+            or (linked.st_dev, linked.st_ino) != expected_identity
+        ):
+            raise StudioError("Transaction directory changed during cleanup.")
         os.rmdir(name, dir_fd=parent_fd)
         os.fsync(parent_fd)
     except StudioError:
@@ -670,16 +688,20 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
         if not has_journal:
             for name in os.listdir(history_fd):
                 if _STAGING_PATTERN.fullmatch(name):
-                    _remove_flat_directory_at(history_fd, name)
+                    identity = _snapshot_identity_at(history_fd, name)
+                    if identity is not None:
+                        _remove_flat_directory_at(history_fd, name, identity)
             return
 
         journal = _read_journal_at(project_fd)
         state = _load_state_at(project_fd)
         staging_name = journal["staging_name"]
         snapshot_name = journal["snapshot_name"]
-        staging_exists = _entry_exists_at(history_fd, staging_name)
+        staging_identity = _snapshot_identity_at(history_fd, staging_name)
         final_identity = _snapshot_identity_at(history_fd, snapshot_name)
         expected_identity = _journal_snapshot_identity(journal)
+        if staging_identity is not None and staging_identity != expected_identity:
+            raise StudioError("The transaction staging directory was replaced.")
         if _transaction_state_matches(state, journal, "target"):
             if final_identity is None:
                 raise StudioError("Committed project state is missing its history snapshot.")
@@ -689,22 +711,26 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
         elif _transaction_state_matches(state, journal, "old"):
             # A remaining staging directory proves this transaction did not
             # publish; an identically named final entry therefore predates it.
-            if not staging_exists and final_identity is not None:
+            if staging_identity is None and final_identity is not None:
                 if final_identity != expected_identity:
                     raise StudioError(
                         "A competing history snapshot prevents automatic recovery."
                     )
                 # Exact inode binding makes cleanup resumable even if a prior
                 # crash already removed some children from this snapshot.
-                _remove_flat_directory_at(history_fd, snapshot_name)
+                _remove_flat_directory_at(
+                    history_fd, snapshot_name, expected_identity
+                )
         else:
             raise StudioError("Project state conflicts with its recovery journal.")
-        if staging_exists:
-            _remove_flat_directory_at(history_fd, staging_name)
+        if staging_identity is not None:
+            _remove_flat_directory_at(history_fd, staging_name, expected_identity)
         _unlink_if_present(project_fd, JOURNAL_NAME)
         for name in os.listdir(history_fd):
             if _STAGING_PATTERN.fullmatch(name):
-                _remove_flat_directory_at(history_fd, name)
+                identity = _snapshot_identity_at(history_fd, name)
+                if identity is not None:
+                    _remove_flat_directory_at(history_fd, name, identity)
     finally:
         os.close(history_fd)
 

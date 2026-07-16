@@ -341,6 +341,70 @@ class StateManagerTests(unittest.TestCase):
         self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
         self.assertEqual([], list(history.iterdir()))
 
+    def test_recovery_remover_rejects_final_and_staging_live_swaps(self) -> None:
+        for boundary, journal_key in (
+            ("snapshot-published", "snapshot_name"),
+            ("journaled", "staging_name"),
+        ):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                result = self.initializer.init_project(
+                    Path(directory), "Swap Test", "short-form", date="2026-07-17"
+                )
+                project = Path(result["path"])
+                history = project / "history"
+                self.module.approve(project, "brief")
+                real_recover = self.module._recover_transaction_at
+
+                def interrupt(name):
+                    if name == boundary:
+                        raise KeyboardInterrupt(name)
+
+                def persist_transaction(project_fd, *, scan_orphans=False):
+                    if scan_orphans and (project / self.module.JOURNAL_NAME).exists():
+                        raise self.module.StudioError("leave transaction persisted")
+                    return real_recover(project_fd, scan_orphans=scan_orphans)
+
+                with (
+                    mock.patch.object(self.module, "_transaction_boundary", side_effect=interrupt),
+                    mock.patch.object(
+                        self.module,
+                        "_recover_transaction_at",
+                        side_effect=persist_transaction,
+                    ),
+                ):
+                    with self.assertRaises(self.module.StudioError):
+                        self.module.reopen(project, "brief", reason="rewrite")
+
+                journal = json.loads(
+                    (project / self.module.JOURNAL_NAME).read_text(encoding="utf-8")
+                )
+                target_name = journal[journal_key]
+                target = history / target_name
+                displaced = history / f".displaced-{boundary}"
+                real_open = self.module.os.open
+                swapped = False
+                competitor_identity: tuple[int, int] | None = None
+
+                def swap_after_open(path, flags, *args, **kwargs):
+                    nonlocal swapped, competitor_identity
+                    descriptor = real_open(path, flags, *args, **kwargs)
+                    if path == target_name and not swapped:
+                        swapped = True
+                        target.rename(displaced)
+                        target.mkdir()
+                        metadata = target.stat()
+                        competitor_identity = (metadata.st_dev, metadata.st_ino)
+                    return descriptor
+
+                with mock.patch.object(self.module.os, "open", side_effect=swap_after_open):
+                    with self.assertRaises(self.module.StudioError):
+                        self.module.status(project)
+                self.assertTrue(swapped)
+                self.assertTrue(target.is_dir())
+                metadata = target.stat()
+                self.assertEqual(competitor_identity, (metadata.st_dev, metadata.st_ino))
+                self.assertTrue((project / self.module.JOURNAL_NAME).is_file())
+
     def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
         stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")
         stale_journal = self.project / (
