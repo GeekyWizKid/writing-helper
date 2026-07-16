@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 from helpers import SKILL_ROOT, load_script_module
 
@@ -108,12 +112,17 @@ class InitProjectTests(unittest.TestCase):
             self.assertEqual("brief_pending", state["stage"])
             self.assertEqual(ARTIFACTS, state["artifacts"])
             self.assertEqual(
-                {name: "pending" for name in ARTIFACTS}, state["approvals"]
+                {
+                    name: "pending"
+                    for name in ("brief", "research", "concept", "outline", "script")
+                },
+                state["approvals"],
             )
             self.assertEqual("undecided", state["research"]["disposition"])
             self.assertEqual("undecided", state["sources"]["disposition"])
             self.assertEqual(
                 {
+                    "project_id": "2026-07-17-Launch",
                     "title": "Launch",
                     "primary_type": "commercial",
                     "secondary_type": "short-form",
@@ -122,6 +131,135 @@ class InitProjectTests(unittest.TestCase):
                     "date": "2026-07-17",
                 },
                 state["project"],
+            )
+
+    def test_collision_resolved_project_id_is_saved_in_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.module.init_project(root, "Same title", "short-form", date="2026-07-17")
+            result = self.module.init_project(
+                root, "Same title", "short-form", date="2026-07-17"
+            )
+
+            state = self.common.load_state_yaml(Path(result["path"]) / "project.yaml")
+            self.assertEqual("2026-07-17-Same-title-02", state["project"]["project_id"])
+
+    def test_write_exception_leaves_no_project_or_staging_and_retry_uses_base_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_write = self.module.atomic_write_text
+            writes = 0
+
+            def fail_on_third_write(path: Path, content: str) -> None:
+                nonlocal writes
+                writes += 1
+                if writes == 3:
+                    raise RuntimeError("injected write failure")
+                real_write(path, content)
+
+            with mock.patch.object(
+                self.module, "atomic_write_text", side_effect=fail_on_third_write
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected write failure"):
+                    self.module.init_project(
+                        root, "Atomic", "short-form", date="2026-07-17"
+                    )
+
+            residue = [
+                entry.name
+                for entry in root.iterdir()
+                if not entry.name.endswith(".lock")
+            ]
+            self.assertEqual([], residue)
+
+            result = self.module.init_project(
+                root, "Atomic", "short-form", date="2026-07-17"
+            )
+            self.assertEqual("2026-07-17-Atomic", Path(result["path"]).name)
+
+    def test_staging_setup_exception_is_cleaned_up(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_chmod = self.module.os.chmod
+
+            def fail_for_staging(path: Path, mode: int) -> None:
+                if Path(path).name.startswith(".video-script-studio-staging-"):
+                    raise RuntimeError("injected staging setup failure")
+                real_chmod(path, mode)
+
+            with mock.patch.object(
+                self.module.os, "chmod", side_effect=fail_for_staging
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "injected staging setup failure"
+                ):
+                    self.module.init_project(
+                        root, "Atomic", "short-form", date="2026-07-17"
+                    )
+
+            residue = [
+                entry.name
+                for entry in root.iterdir()
+                if not entry.name.endswith(".lock")
+            ]
+            self.assertEqual([], residue)
+
+    def test_absent_root_is_created_private(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "new-root"
+            self.module.init_project(root, "Private", "short-form", date="2026-07-17")
+            self.assertEqual(0o700, stat.S_IMODE(root.stat().st_mode))
+
+    def test_rejects_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            real_root = parent / "real-root"
+            real_root.mkdir()
+            symlink_root = parent / "linked-root"
+            symlink_root.symlink_to(real_root, target_is_directory=True)
+
+            with self.assertRaises(self.module.StudioError):
+                self.module.init_project(
+                    symlink_root, "Unsafe", "short-form", date="2026-07-17"
+                )
+            self.assertEqual([], list(real_root.iterdir()))
+
+    def test_rejects_group_or_world_writable_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "unsafe-root"
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o777)
+
+            with self.assertRaises(self.module.StudioError):
+                self.module.init_project(
+                    root, "Unsafe", "short-form", date="2026-07-17"
+                )
+            self.assertEqual([], list(root.iterdir()))
+
+    def test_concurrent_initialization_uses_unique_deterministic_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def create(_: int) -> str:
+                return Path(
+                    self.module.init_project(
+                        root, "Concurrent", "short-form", date="2026-07-17"
+                    )["path"]
+                ).name
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                names = sorted(executor.map(create, range(6)))
+
+            self.assertEqual(
+                [
+                    "2026-07-17-Concurrent",
+                    "2026-07-17-Concurrent-02",
+                    "2026-07-17-Concurrent-03",
+                    "2026-07-17-Concurrent-04",
+                    "2026-07-17-Concurrent-05",
+                    "2026-07-17-Concurrent-06",
+                ],
+                names,
             )
 
     def test_rejects_invalid_primary_type(self) -> None:
@@ -142,6 +280,20 @@ class InitProjectTests(unittest.TestCase):
             )
 
             self.assertEqual("user data", sentinel.read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-17-Title-02", Path(result["path"]).name)
+
+    def test_existing_dangling_symlink_is_never_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = root / "2026-07-17-Title"
+            existing.symlink_to(root / "missing-target", target_is_directory=True)
+
+            result = self.module.init_project(
+                root, "Title", "long-form", date="2026-07-17"
+            )
+
+            self.assertTrue(existing.is_symlink())
+            self.assertEqual(root / "missing-target", existing.readlink())
             self.assertEqual("2026-07-17-Title-02", Path(result["path"]).name)
 
 

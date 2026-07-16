@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import shutil
+import stat
 import sys
+import tempfile
+from contextlib import contextmanager
 from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
@@ -74,29 +79,53 @@ def _validate_root(root: Path) -> Path:
     if not isinstance(root, Path):
         raise StudioError("root must be a filesystem path.")
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        if root.is_symlink():
+            raise StudioError("The project root must not be a symbolic link.")
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = root.stat(follow_symlinks=False)
+        if stat.S_ISLNK(root_stat.st_mode):
+            raise StudioError("The project root must not be a symbolic link.")
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise StudioError("The project root must be a directory.")
+        if root_stat.st_uid != os.getuid() or stat.S_IMODE(root_stat.st_mode) & 0o022:
+            raise StudioError("The project root has unsafe ownership or permissions.")
         resolved = root.resolve(strict=True)
     except OSError as exc:
         raise StudioError("Could not prepare the project root.") from exc
-    if not resolved.is_dir():
-        raise StudioError("The project root must be a directory.")
     return resolved
 
 
-def _reserve_project_directory(root: Path, base_name: str) -> Path:
+def _available_project_directory(root: Path, base_name: str) -> Path:
     sequence = 1
     while True:
         suffix = "" if sequence == 1 else f"-{sequence:02d}"
         candidate = root / f"{base_name}{suffix}"
         if candidate.parent != root:
             raise StudioError("The project path is invalid.")
-        try:
-            candidate.mkdir()
+        if not os.path.lexists(candidate):
             return candidate
-        except FileExistsError:
-            sequence += 1
-        except OSError as exc:
-            raise StudioError("Could not create the project directory.") from exc
+        sequence += 1
+
+
+@contextmanager
+def _locked_root(root: Path):
+    """Serialize candidate selection and publication for a trusted root."""
+    lock_path = root / ".video-script-studio.lock"
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    except OSError as exc:
+        raise StudioError("Could not lock the project root.") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 def _artifact_content(filename: str) -> str:
@@ -129,27 +158,38 @@ def init_project(
     project_date = _project_date(date)
     root = _validate_root(root)
     base_name = f"{project_date}-{safe_slug(title)}"
-    state = load_state_yaml(_TEMPLATE_PATH)
-    state["project"] = {
-        "date": project_date,
-        "platform": platform,
-        "primary_type": primary_type,
-        "profile_id": profile_id,
-        "secondary_type": secondary_type,
-        "title": title,
-    }
+    with _locked_root(root):
+        project = _available_project_directory(root, base_name)
+        state = load_state_yaml(_TEMPLATE_PATH)
+        state["project"] = {
+            "date": project_date,
+            "platform": platform,
+            "primary_type": primary_type,
+            "profile_id": profile_id,
+            "project_id": project.name,
+            "secondary_type": secondary_type,
+            "title": title,
+        }
 
-    project = _reserve_project_directory(root, base_name)
-    try:
-        (project / "history").mkdir()
-        for filename in REQUIRED_ARTIFACTS:
-            atomic_write_text(project / filename, _artifact_content(filename))
-        atomic_write_text(project / "project.yaml", dump_state_yaml(state))
-    except (OSError, StudioError) as exc:
-        shutil.rmtree(project, ignore_errors=True)
-        if isinstance(exc, StudioError):
+        staging: Path | None = None
+        try:
+            staging = Path(
+                tempfile.mkdtemp(prefix=".video-script-studio-staging-", dir=root)
+            )
+            os.chmod(staging, 0o700)
+            (staging / "history").mkdir()
+            for filename in REQUIRED_ARTIFACTS:
+                atomic_write_text(staging / filename, _artifact_content(filename))
+            atomic_write_text(staging / "project.yaml", dump_state_yaml(state))
+            staging.rename(project)
+        except Exception as exc:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            if isinstance(exc, StudioError):
+                raise
+            if isinstance(exc, OSError):
+                raise StudioError("Could not initialize the project files.") from exc
             raise
-        raise StudioError("Could not initialize the project files.") from exc
 
     return {
         "path": str(project),
