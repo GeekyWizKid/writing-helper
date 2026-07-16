@@ -14,9 +14,37 @@ HARNESS = REPO_ROOT / "scripts" / "verify-video-script-studio-e2e.sh"
 E2E_ROOT = Path(__file__).resolve().parent
 GATE_DIAGNOSTIC = E2E_ROOT / "gate_result_diagnostic.py"
 CODEX_FAILURE_DIAGNOSTIC = E2E_ROOT / "codex_failure_diagnostic.py"
+STATE_CONTRACT_DIAGNOSTIC = E2E_ROOT / "state_contract_diagnostic.py"
 
 
 class HarnessContractTests(unittest.TestCase):
+    def test_state_contract_diagnostics_are_fixed_and_non_reflective(self) -> None:
+        self.assertTrue(STATE_CONTRACT_DIAGNOSTIC.is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = root / "status.json"
+            pack = root / "pack.json"
+            status.write_text(json.dumps({
+                "stage": "script_approved",
+                "approvals": {name: "approved" for name in ("brief", "research", "concept", "outline", "script")},
+                "private": "SECRET",
+            }), encoding="utf-8")
+            pack.write_text(json.dumps({
+                "valid": False,
+                "error_codes": ["review_invalid", "missing_heading"],
+                "private": "SECRET",
+            }), encoding="utf-8")
+            completed = subprocess.run(
+                ["python3", str(STATE_CONTRACT_DIAGNOSTIC), str(status), "complete", "brief,research,concept,outline,script", str(pack)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                ["state_stage_mismatch", "pack_error_review_invalid", "pack_error_missing_heading"],
+                completed.stdout.splitlines(),
+            )
+            self.assertNotIn("SECRET", completed.stdout + completed.stderr)
+
     def test_codex_failure_diagnostics_never_reflect_private_log_text(self) -> None:
         self.assertTrue(CODEX_FAILURE_DIAGNOSTIC.is_file())
         cases = (
@@ -157,6 +185,8 @@ class HarnessContractTests(unittest.TestCase):
             "assert_approved_unchanged",
             "gate_result_diagnostic.py",
             "codex_failure_diagnostic.py",
+            "state_contract_diagnostic.py",
+            "state_stage_mismatch",
             "codex_turn_schema_error",
             "gate_result_awaiting_gate_mismatch",
             "write_gate_schema",

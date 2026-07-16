@@ -207,6 +207,7 @@ RUNTIME_REVIEW_SCHEMA="$INSTALLED_SKILL/tests/e2e/review-result.schema.json"
 RUNTIME_FINAL_SCHEMA="$INSTALLED_SKILL/tests/e2e/expected-result.schema.json"
 RUNTIME_GATE_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/gate_result_diagnostic.py"
 RUNTIME_CODEX_FAILURE_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/codex_failure_diagnostic.py"
+RUNTIME_STATE_CONTRACT_DIAGNOSTIC="$INSTALLED_SKILL/tests/e2e/state_contract_diagnostic.py"
 "$PYTHON_BIN" - "$INSTALLED_SKILL" <<'PY'
 import shutil
 import sys
@@ -625,18 +626,29 @@ assert_exact_approvals() {
   local status_file=$4
   "$PYTHON_BIN" "$INSTALLED_SKILL/scripts/state_manager.py" status \
     --project "$project" >"$status_file"
-  "$PYTHON_BIN" - "$status_file" "$expected_stage" "$approved_csv" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-approved = set(filter(None, sys.argv[3].split(",")))
-expected_names = {"brief", "research", "concept", "outline", "script"}
-expected = {name: ("approved" if name in approved else "pending") for name in expected_names}
-if value.get("stage") != sys.argv[2] or value.get("approvals") != expected:
-    raise SystemExit("stage or approval map differs from the exact gate contract")
-PY
+  local pack_file=""
+  if [[ "$expected_stage" == "complete" ]]; then
+    pack_file="$status_file.pack.json"
+    "$PYTHON_BIN" "$INSTALLED_SKILL/scripts/validate_pack.py" \
+      --project "$project" >"$pack_file"
+  fi
+  local diagnostic
+  diagnostic="$($PYTHON_BIN "$RUNTIME_STATE_CONTRACT_DIAGNOSTIC" \
+    "$status_file" "$expected_stage" "$approved_csv" ${pack_file:+"$pack_file"})" \
+    || die "state_contract_diagnostic_failure"
+  if [[ -n "$diagnostic" ]]; then
+    while IFS= read -r code; do
+      case "$code" in
+        state_stage_mismatch|state_approval_map_mismatch|pack_error_*|pack_diagnostic_invalid|state_contract_diagnostic_failure)
+          printf '%s\n' "$code" >&2
+          ;;
+        *)
+          die "state_contract_diagnostic_failure"
+          ;;
+      esac
+    done <<<"$diagnostic"
+    die "state or pack contract failed"
+  fi
 }
 
 assert_approved_unchanged() {
