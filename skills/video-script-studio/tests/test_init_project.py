@@ -127,6 +127,61 @@ class InitProjectTests(unittest.TestCase):
             )
             self.assertFalse(root.exists())
 
+    def test_missing_native_rename_symbol_fails_before_root_creation(self) -> None:
+        expected = (
+            "Project initialization requires POSIX Darwin or Linux with fcntl "
+            "and getuid support."
+        )
+        for platform in ("darwin", "linux"):
+            with self.subTest(platform=platform):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "must-not-exist"
+                    with (
+                        mock.patch.object(self.module.sys, "platform", platform),
+                        mock.patch.object(
+                            self.module.ctypes, "CDLL", return_value=object()
+                        ),
+                    ):
+                        with self.assertRaises(self.module.StudioError) as raised:
+                            self.module.init_project(
+                                root, "Unsupported", "short-form", date="2026-07-17"
+                            )
+
+                    self.assertEqual(expected, str(raised.exception))
+                    self.assertFalse(root.exists())
+
+    def test_main_reports_missing_native_rename_symbol_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "must-not-exist"
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(self.module.ctypes, "CDLL", return_value=object()),
+                redirect_stdout(stdout),
+            ):
+                exit_code = self.module.main(
+                    [
+                        "--root",
+                        str(root),
+                        "--title",
+                        "Unsupported",
+                        "--primary-type",
+                        "short-form",
+                    ]
+                )
+
+            self.assertEqual(2, exit_code)
+            self.assertEqual(
+                {
+                    "error": (
+                        "Project initialization requires POSIX Darwin or Linux "
+                        "with fcntl and getuid support."
+                    ),
+                    "status": "error",
+                },
+                json.loads(stdout.getvalue()),
+            )
+            self.assertFalse(root.exists())
+
     def test_returns_exact_public_creation_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = self.module.init_project(
@@ -356,7 +411,9 @@ class InitProjectTests(unittest.TestCase):
                     real_rename = self.module._rename_directory_noreplace
                     first_publish = True
 
-                    def inject_competitor(source: Path, destination: Path) -> None:
+                    def inject_competitor(
+                        source: Path, destination: Path, native_rename
+                    ) -> None:
                         nonlocal first_publish
                         if first_publish:
                             first_publish = False
@@ -366,7 +423,7 @@ class InitProjectTests(unittest.TestCase):
                                 destination.write_text("competitor", encoding="utf-8")
                             else:
                                 destination.symlink_to(root / "competitor-target")
-                        real_rename(source, destination)
+                        real_rename(source, destination, native_rename)
 
                     with mock.patch.object(
                         self.module,

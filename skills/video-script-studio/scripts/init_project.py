@@ -14,7 +14,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import date as calendar_date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import fcntl
@@ -85,12 +85,41 @@ def _project_date(value: str | None) -> str:
     return value
 
 
-def _require_supported_platform() -> None:
-    """Reject unsupported project platforms before any filesystem mutation."""
+def _require_supported_platform() -> Callable[[bytes, bytes], int]:
+    """Return the native exclusive rename callable before filesystem mutation."""
     getuid = getattr(os, "getuid", None)
     supported_os = sys.platform == "darwin" or sys.platform.startswith("linux")
     if not supported_os or fcntl is None or not callable(getuid):
         raise StudioError(_UNSUPPORTED_PLATFORM_MESSAGE)
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if sys.platform == "darwin":
+            # RENAME_EXCL is 0x00000004 in the Darwin SDK's <sys/stdio.h>.
+            rename = libc.renamex_np
+            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+
+            def native_rename(source: bytes, destination: bytes) -> int:
+                return rename(source, destination, 0x00000004)
+
+        else:
+            # RENAME_NOREPLACE is 1 in the Linux UAPI <linux/fs.h>.
+            rename = libc.renameat2
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+
+            def native_rename(source: bytes, destination: bytes) -> int:
+                return rename(-100, source, -100, destination, 1)
+
+    except (AttributeError, OSError) as exc:
+        raise StudioError(_UNSUPPORTED_PLATFORM_MESSAGE) from exc
+    return native_rename
 
 
 def _validate_root(root: Path) -> Path:
@@ -128,38 +157,13 @@ def _available_project_directory(root: Path, base_name: str) -> Path:
         sequence += 1
 
 
-def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+def _rename_directory_noreplace(
+    source: Path,
+    destination: Path,
+    native_rename: Callable[[bytes, bytes], int],
+) -> None:
     """Atomically rename a directory only when the destination is absent."""
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        source_bytes = os.fsencode(source)
-        destination_bytes = os.fsencode(destination)
-        if sys.platform == "darwin":
-            # RENAME_EXCL is 0x00000004 in the Darwin SDK's <sys/stdio.h>.
-            rename = libc.renamex_np
-            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-            rename.restype = ctypes.c_int
-            result = rename(source_bytes, destination_bytes, 0x00000004)
-        elif sys.platform.startswith("linux"):
-            # RENAME_NOREPLACE is 1 in the Linux UAPI <linux/fs.h>.
-            rename = libc.renameat2
-            rename.argtypes = [
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_uint,
-            ]
-            rename.restype = ctypes.c_int
-            result = rename(-100, source_bytes, -100, destination_bytes, 1)
-        else:
-            raise StudioError(
-                "Atomic no-replace publication is not supported on this platform."
-            )
-    except AttributeError as exc:
-        raise StudioError(
-            "Atomic no-replace publication is not supported on this platform."
-        ) from exc
+    result = native_rename(os.fsencode(source), os.fsencode(destination))
 
     if result == 0:
         return
@@ -223,7 +227,7 @@ def init_project(
         raise StudioError("secondary_type is not supported.")
 
     project_date = _project_date(date)
-    _require_supported_platform()
+    native_rename = _require_supported_platform()
     root = _validate_root(root)
     base_name = f"{project_date}-{safe_slug(title)}"
     with _locked_root(root):
@@ -251,7 +255,7 @@ def init_project(
             atomic_write_text(staging / "project.yaml", dump_state_yaml(state))
             while True:
                 try:
-                    _rename_directory_noreplace(staging, project)
+                    _rename_directory_noreplace(staging, project, native_rename)
                     break
                 except FileExistsError:
                     project = _available_project_directory(root, base_name)
