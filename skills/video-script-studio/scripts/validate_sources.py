@@ -28,7 +28,7 @@ MAX_INPUT_BYTES = 10 * 1024 * 1024
 
 _CLAIM_ID = re.compile(r"^C[0-9]{2}$")
 _SOURCE_ID = re.compile(r"^S[0-9]{2}$")
-_SCRIPT_MARKER = re.compile(r"\[(C[^\[\]]*)\]")
+_SCRIPT_MARKER = re.compile(r"\[(C\d+)\]")
 _COMMUNITY_ONLY_ALLOWED_TYPES = ("audience-language", "anecdote")
 _REQUIRED_MANIFEST_FIELDS = (
     "schema_version",
@@ -143,7 +143,11 @@ def _valid_provenance(value: Any) -> bool:
         # Provenance can describe a file that will be captured later; existence is not required.
         return True
     url = value.get("url")
-    if not _nonempty_text(url) or any(character.isspace() for character in url):
+    if (
+        not _nonempty_text(url)
+        or any(character.isspace() for character in url)
+        or "\\" in url
+    ):
         return False
     if _has_control_character(url):
         return False
@@ -156,6 +160,7 @@ def _valid_provenance(value: Any) -> bool:
     return (
         parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
+        and "@" not in parsed.netloc
         and hostname is not None
         and _valid_hostname(hostname)
         and (port is None or 0 <= port <= 65535)

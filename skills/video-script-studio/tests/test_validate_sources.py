@@ -177,6 +177,9 @@ class ValidateSourcesTests(unittest.TestCase):
             "https://example.com:not-a-port/path",
             "https://example.com:70000/path",
             "https://[::1/path",
+            "https://user:secret@example.com/path",
+            "https://@example.com",
+            "https://example.com\\@evil.com/path",
         )
         for url in invalid_urls:
             manifest = valid_manifest()
@@ -306,6 +309,38 @@ class ValidateSourcesTests(unittest.TestCase):
         result = validate(valid_manifest(), "A missing claim [C02].")
         self.assertIn("unresolved_script_marker", result["error_codes"])
         self.assertIn("claim_missing_from_script", result["error_codes"])
+
+    def test_script_annotations_and_markdown_links_are_not_claim_markers(self):
+        manifest = {
+            "schema_version": 1,
+            "research_required": False,
+            "decision_reason": "The script contains production annotations only.",
+            "sources": [],
+            "claims": [],
+        }
+        annotations = (
+            "Subscribe [CTA]",
+            "Opening [Chapter 1]",
+            "Licensed [CC BY 4.0]",
+            "Read [Click here](https://example.com)",
+        )
+        for script_text in annotations:
+            with self.subTest(script_text=script_text):
+                self.assertTrue(validate(manifest, script_text)["valid"])
+
+    def test_unicode_decimal_candidate_is_rejected_as_a_non_ascii_claim_marker(self):
+        manifest = {
+            "schema_version": 1,
+            "research_required": False,
+            "decision_reason": "No factual claims are permitted.",
+            "sources": [],
+            "claims": [],
+        }
+
+        result = validate(manifest, "Potential marker [C１２]")
+
+        self.assertIn("unresolved_script_marker", result["error_codes"])
+        self.assertIn("factual_marker_without_research", result["error_codes"])
 
     def test_rejects_duplicate_script_claim_references(self):
         result = validate(valid_manifest(), "First [C01], repeated [C01].")
