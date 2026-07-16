@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -102,6 +103,10 @@ class HarnessContractTests(unittest.TestCase):
         self.assertEqual(0, current.returncode, current.stderr)
 
         content = HARNESS.read_text(encoding="utf-8")
+        self.assertIsNone(
+            re.search(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]", content),
+            "brace shell variables before adjacent non-ASCII punctuation",
+        )
         for required in (
             "set -Eeuo pipefail",
             "umask 077",

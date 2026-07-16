@@ -775,7 +775,7 @@ DURATION_RESULT_HASH="$(file_sha256 "$DURATION_RESULT")"
 TURN5_PROMPT="$RUN_ROOT/turn-5.md"
 TURN5_RESULT="$RUN_ROOT/turn-5.json"
 write_resume_prompt "$TURN5_PROMPT" "$PROJECT" outline "outline.md" "$OUTLINE_HASH" script script.md \
-  "写同时包含干净表演稿与制作执行稿的 script.md，并包含全部确定性必需标题及旁白克制段。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 $DURATION_RESULT；在 ## 预计时长 中逐字记录 duration_input_sha256: $DURATION_INPUT_HASH、duration_result_sha256: $DURATION_RESULT_HASH、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
+  "写同时包含干净表演稿与制作执行稿的 script.md，并包含全部确定性必需标题及旁白克制段。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
 run_codex_turn "$TURN5_PROMPT" "$RUNTIME_GATE_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
