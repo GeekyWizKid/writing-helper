@@ -38,14 +38,36 @@ class HarnessContractTests(unittest.TestCase):
                 "scripts" / "quick_validate.py"
             )
             validator.parent.mkdir(parents=True)
-            validator.write_text("# portable validator fixture\n", encoding="utf-8")
+            validator.write_text("# fake validator that performs no validation\n", encoding="utf-8")
             validator.chmod(0o600)
+            fake = subprocess.run(
+                ["bash", str(HARNESS), "--preflight"], cwd=REPO_ROOT,
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(0, fake.returncode)
+            self.assertIn("official validator execution failed", fake.stderr)
+
+            validator.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "skill = Path(sys.argv[1])\n"
+                "if not (skill / 'SKILL.md').is_file():\n"
+                "    raise SystemExit(1)\n"
+                "print('Skill is valid!')\n",
+                encoding="utf-8",
+            )
             preflight = subprocess.run(
                 ["bash", str(HARNESS), "--preflight"], cwd=REPO_ROOT,
                 env=environment, capture_output=True, text=True, check=False,
             )
             self.assertEqual(0, preflight.returncode, preflight.stderr)
             self.assertEqual("video-script-studio-e2e preflight ok\n", preflight.stdout)
+
+        current = subprocess.run(
+            ["bash", str(HARNESS), "--preflight"], cwd=REPO_ROOT,
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(0, current.returncode, current.stderr)
 
         content = HARNESS.read_text(encoding="utf-8")
         for required in (
@@ -80,6 +102,8 @@ class HarnessContractTests(unittest.TestCase):
             'import_module("validate_sources")',
             'import_module("estimate_duration")',
             "Skill is valid!",
+            "execute_official_validator",
+            "official validator execution failed",
             "video-script-studio-e2e ok",
         ):
             self.assertIn(required, content)

@@ -45,6 +45,53 @@ if (validator.resolve() != validator or validator.is_symlink()
 PY
 }
 
+execute_official_validator() {
+  local validator=$1
+  local skill=$2
+  local uv_bin
+  uv_bin="$(command -v uv)" || die "required command is unavailable: uv"
+  python3 - "$validator" "$skill" "$uv_bin" <<'PY'
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+validator, skill, uv_bin = sys.argv[1:]
+try:
+    with tempfile.TemporaryDirectory(prefix="video-script-studio-preflight-") as directory:
+        root = Path(directory)
+        paths = {
+            "HOME": root / "home",
+            "CODEX_HOME": root / "codex-home",
+            "XDG_CONFIG_HOME": root / "xdg-config",
+            "XDG_DATA_HOME": root / "xdg-data",
+            "XDG_CACHE_HOME": root / "xdg-cache",
+            "TMPDIR": root / "tmp",
+        }
+        for path in paths.values():
+            path.mkdir(mode=0o700)
+        environment = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            **{name: str(path) for name, path in paths.items()},
+        }
+        completed = subprocess.run(
+            [uv_bin, "run", "--with", "pyyaml", "python", validator, skill],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+            check=False,
+        )
+except (OSError, subprocess.SubprocessError):
+    raise SystemExit("official validator execution failed")
+if completed.returncode != 0 or completed.stdout != b"Skill is valid!\n":
+    raise SystemExit("official validator execution failed")
+PY
+}
+
 static_preflight() {
   local validator
   validator="$(official_validator_path)"
@@ -71,6 +118,7 @@ for path in (gate_path, review_path, final_path):
     if value.get("type") != "object" or value.get("additionalProperties") is not False:
         raise SystemExit("result schema is not strict")
 PY
+  execute_official_validator "$validator" "$SOURCE_SKILL"
   printf '%s\n' "$PREFLIGHT_MARKER"
 }
 
