@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_path", "awaiting_gate", "artifact"],
+  "properties": {
+    "project_path": {"type": "string"},
+    "awaiting_gate": {
+      "enum": ["brief", "research", "concept", "outline", "script"]
+    },
+    "artifact": {
+      "enum": ["brief.md", "research.md", "concepts.md", "outline.md", "script.md"]
+    }
+  }
+}

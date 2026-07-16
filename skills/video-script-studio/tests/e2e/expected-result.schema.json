@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project_path",
+    "primary_type",
+    "stage",
+    "validation_valid",
+    "saved_artifacts",
+    "unresolved_warnings",
+    "next_action"
+  ],
+  "properties": {
+    "project_path": {"type": "string"},
+    "primary_type": {"const": "visual-essay"},
+    "stage": {"const": "complete"},
+    "validation_valid": {"const": true},
+    "saved_artifacts": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "brief.md",
+          "research.md",
+          "concepts.md",
+          "outline.md",
+          "script.md",
+          "storyboard.md",
+          "assets.md",
+          "publish.md",
+          "sources.md",
+          "review.md"
+        ]
+      }
+    },
+    "unresolved_warnings": {"type": "array", "items": {"type": "string"}},
+    "next_action": {"type": "string"}
+  }
+}
