@@ -132,6 +132,46 @@ class ProfileManagerTests(unittest.TestCase):
 
         self.assertEqual(original, profile_path.read_bytes())
 
+    def test_failed_create_never_deletes_replacement_profile_path(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "beta", "Beta")
+        beta_path = self.root / "beta"
+        beta_inode = (beta_path.stat().st_dev, beta_path.stat().st_ino)
+        original_partial = self.root / "main-original"
+        original_atomic_write = manager._atomic_write_at
+        partial_inode = None
+
+        def replace_then_fail(dir_fd, name, content):
+            nonlocal partial_inode
+            if name == "profile.md" and partial_inode is None:
+                main_path = self.root / "main"
+                created = main_path.stat()
+                partial_inode = (created.st_dev, created.st_ino)
+                main_path.rename(original_partial)
+                beta_path.rename(main_path)
+                raise self.common.StudioError("injected create failure")
+            return original_atomic_write(dir_fd, name, content)
+
+        with patch.object(manager, "_atomic_write_at", replace_then_fail):
+            with self.assertRaises(self.common.StudioError):
+                manager.create_profile(self.root, "main", "Main")
+
+        replacement = self.root / "main"
+        self.assertTrue(replacement.is_dir())
+        replacement_stat = replacement.stat()
+        self.assertEqual(beta_inode, (replacement_stat.st_dev, replacement_stat.st_ino))
+        self.assertIn("Beta", (replacement / "profile.md").read_text(encoding="utf-8"))
+        self.assertIsNotNone(partial_inode)
+        if original_partial.exists():
+            partial_stat = original_partial.stat()
+            self.assertEqual(
+                partial_inode, (partial_stat.st_dev, partial_stat.st_ino)
+            )
+        self.assertEqual(
+            {"main", "main-original"},
+            {path.name for path in self.root.iterdir()},
+        )
+
     def test_update_requires_explicit_confirmation_without_mutation(self) -> None:
         manager = self.require_manager()
         manager.create_profile(self.root, "main", "主账号")
@@ -296,6 +336,31 @@ class ProfileManagerTests(unittest.TestCase):
             change_note="retry after recovery",
         )
         self.assertEqual(1, retried["version"])
+
+    def test_snapshot_open_failure_does_not_leak_directory_descriptors(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "main", "主账号")
+        descriptor_count_before = len(os.listdir("/dev/fd"))
+        original_open_directory = manager._open_directory_at
+
+        def fail_snapshot_open(parent_fd, name, *, trusted=True):
+            if name == "snapshot":
+                raise self.common.StudioError("injected snapshot open failure")
+            return original_open_directory(parent_fd, name, trusted=trusted)
+
+        with patch.object(manager, "_open_directory_at", fail_snapshot_open):
+            with self.assertRaises(self.common.StudioError):
+                manager.update_profile(
+                    self.root,
+                    "main",
+                    "must not publish",
+                    confirmed=True,
+                    change_note="descriptor cleanup test",
+                )
+
+        self.assertEqual(descriptor_count_before, len(os.listdir("/dev/fd")))
+        recovered = manager.read_profile(self.root, "main")
+        self.assertNotEqual("must not publish", recovered["content"])
 
     def test_versions_swap_after_validation_never_writes_outside_root(self) -> None:
         manager = self.require_manager()

@@ -312,6 +312,19 @@ def _remove_tree_at(parent_fd: int, name: str) -> None:
         raise StudioError("Could not remove profile transaction directory.") from exc
 
 
+def _clear_directory_fd(directory_fd: int) -> None:
+    """Remove children from an already-open directory without reopening its path."""
+    try:
+        for child in os.listdir(directory_fd):
+            metadata = os.stat(child, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                _remove_tree_at(directory_fd, child)
+            else:
+                os.unlink(child, dir_fd=directory_fd)
+    except OSError as exc:
+        raise StudioError("Could not clean the partial creator profile.") from exc
+
+
 def _unlink_at(dir_fd: int, name: str) -> None:
     try:
         os.unlink(name, dir_fd=dir_fd)
@@ -592,6 +605,8 @@ def create_profile(root: Path, profile_id: str, display_name: str) -> dict:
     _validate_text(display_name, "Display name")
     root_path = _prepare_root(root, create=True)
     root_fd = _open_path_directory(root_path)
+    cleanup_fd: int | None = None
+    created_identity: tuple[int, int] | None = None
     try:
         try:
             os.mkdir(profile_id, mode=0o700, dir_fd=root_fd)
@@ -599,6 +614,9 @@ def create_profile(root: Path, profile_id: str, display_name: str) -> dict:
             raise StudioError("Creator profile already exists.") from exc
         try:
             profile_fd = _open_directory_at(root_fd, profile_id)
+            created = os.fstat(profile_fd)
+            created_identity = (created.st_dev, created.st_ino)
+            cleanup_fd = os.dup(profile_fd)
             try:
                 lock_fd = os.open(
                     LOCK_NAME,
@@ -641,10 +659,26 @@ def create_profile(root: Path, profile_id: str, display_name: str) -> dict:
             finally:
                 os.close(profile_fd)
         except BaseException as exc:
-            if _entry_exists_at(root_fd, profile_id):
+            if cleanup_fd is not None:
                 try:
-                    _remove_tree_at(root_fd, profile_id)
+                    _clear_directory_fd(cleanup_fd)
                 except StudioError:
+                    pass
+            try:
+                current = os.stat(
+                    profile_id, dir_fd=root_fd, follow_symlinks=False
+                )
+            except OSError:
+                current = None
+            if (
+                current is not None
+                and created_identity is not None
+                and not stat.S_ISLNK(current.st_mode)
+                and (current.st_dev, current.st_ino) == created_identity
+            ):
+                try:
+                    os.rmdir(profile_id, dir_fd=root_fd)
+                except OSError:
                     pass
             if isinstance(exc, Exception):
                 if isinstance(exc, StudioError):
@@ -652,6 +686,8 @@ def create_profile(root: Path, profile_id: str, display_name: str) -> dict:
                 raise StudioError("Could not create the creator profile safely.") from exc
             raise
     finally:
+        if cleanup_fd is not None:
+            os.close(cleanup_fd)
         os.close(root_fd)
     return read_profile(root_path, profile_id)
 
@@ -702,10 +738,13 @@ def _stage_update_at(
     try:
         for name in ("old", "new", "snapshot"):
             os.mkdir(name, mode=0o700, dir_fd=staging_fd)
-        old_fd = _open_directory_at(staging_fd, "old", trusted=False)
-        new_fd = _open_directory_at(staging_fd, "new", trusted=False)
-        snapshot_fd = _open_directory_at(staging_fd, "snapshot", trusted=False)
+        old_fd: int | None = None
+        new_fd: int | None = None
+        snapshot_fd: int | None = None
         try:
+            old_fd = _open_directory_at(staging_fd, "old", trusted=False)
+            new_fd = _open_directory_at(staging_fd, "new", trusted=False)
+            snapshot_fd = _open_directory_at(staging_fd, "snapshot", trusted=False)
             _atomic_write_at(
                 old_fd, "profile.md", _read_text_at(handles.profile_fd, "profile.md")
             )
@@ -723,9 +762,12 @@ def _stage_update_at(
                     _read_text_at(handles.profile_fd, document),
                 )
         finally:
-            os.close(snapshot_fd)
-            os.close(new_fd)
-            os.close(old_fd)
+            if snapshot_fd is not None:
+                os.close(snapshot_fd)
+            if new_fd is not None:
+                os.close(new_fd)
+            if old_fd is not None:
+                os.close(old_fd)
     finally:
         os.close(staging_fd)
     journal["phase"] = "staged"
