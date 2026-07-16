@@ -97,6 +97,27 @@ class ProfileManagerTests(unittest.TestCase):
         with self.assertRaises(self.common.StudioError):
             manager.read_profile(self.root, "../alpha")
 
+    def test_read_rejects_cross_profile_document_symlink_without_leaking(self) -> None:
+        manager = self.require_manager()
+        manager.create_profile(self.root, "alpha", "Alpha")
+        manager.create_profile(self.root, "beta", "Beta")
+        secret = "alpha-private-content"
+        manager.update_profile(
+            self.root,
+            "alpha",
+            secret,
+            confirmed=True,
+            change_note="private alpha update",
+        )
+        beta_document = self.root / "beta" / "profile.md"
+        beta_document.unlink()
+        beta_document.symlink_to(self.root / "alpha" / "profile.md")
+
+        with self.assertRaises(self.common.StudioError) as raised:
+            manager.read_profile(self.root, "beta")
+
+        self.assertNotIn(secret, str(raised.exception))
+
     def test_duplicate_create_is_rejected_without_overwriting_files(self) -> None:
         manager = self.require_manager()
         manager.create_profile(self.root, "main", "First Name")

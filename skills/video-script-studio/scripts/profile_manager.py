@@ -98,6 +98,8 @@ def _profile_path(root: Path, profile_id: str) -> Path:
         root_path = Path(root)
         resolved_root = root_path.resolve()
         candidate = root_path / safe_id
+        if candidate.is_symlink():
+            raise StudioError("Profile path must not be a symbolic link.")
         if candidate.exists() and candidate.resolve().parent != resolved_root:
             raise StudioError("Profile path is outside the profile root.")
         if candidate.parent.resolve() != resolved_root:
@@ -123,7 +125,9 @@ def _template_content(display_name: str) -> str:
 
 
 def _load_manifest(profile_path: Path) -> dict[str, Any]:
-    manifest = read_json(profile_path / "versions" / "manifest.json")
+    versions_path = _require_direct_directory(profile_path, "versions")
+    manifest_path = _require_direct_file(versions_path, "manifest.json")
+    manifest = read_json(manifest_path)
     versions = manifest.get("versions")
     if not isinstance(versions, list) or any(
         not isinstance(item, dict) or not isinstance(item.get("version"), int)
@@ -133,13 +137,39 @@ def _load_manifest(profile_path: Path) -> dict[str, Any]:
     return manifest
 
 
+def _has_expected_parent(path: Path, parent: Path) -> bool:
+    try:
+        return path.resolve().parent == parent.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise StudioError("Could not resolve the creator profile safely.") from exc
+
+
+def _require_direct_directory(parent: Path, name: str) -> Path:
+    path = parent / name
+    if path.is_symlink() or not path.is_dir() or not _has_expected_parent(path, parent):
+        raise StudioError("Creator profile contains an unsafe directory.")
+    return path
+
+
+def _require_direct_file(parent: Path, name: str) -> Path:
+    path = parent / name
+    if path.is_symlink() or not path.is_file() or not _has_expected_parent(path, parent):
+        raise StudioError("Creator profile contains an unsafe document.")
+    return path
+
+
 def _require_profile(root: Path, profile_id: str) -> Path:
     profile_path = _profile_path(root, profile_id)
-    if not profile_path.is_dir() or profile_path.is_symlink():
+    if (
+        profile_path.is_symlink()
+        or not profile_path.is_dir()
+        or not _has_expected_parent(profile_path, Path(root))
+    ):
         raise StudioError("Creator profile does not exist.")
     for name in PROFILE_DOCUMENTS:
-        if not (profile_path / name).is_file():
-            raise StudioError("Creator profile is incomplete.")
+        _require_direct_file(profile_path, name)
+    _require_direct_directory(profile_path, "samples")
+    _require_direct_directory(profile_path, "versions")
     return profile_path
 
 
@@ -264,8 +294,8 @@ def list_profiles(root: Path) -> list[dict]:
         profile_ids = sorted(
             entry.name
             for entry in root_path.iterdir()
-            if entry.is_dir()
-            and not entry.is_symlink()
+            if not entry.is_symlink()
+            and entry.is_dir()
             and PROFILE_ID_PATTERN.fullmatch(entry.name)
         )
     except OSError as exc:
