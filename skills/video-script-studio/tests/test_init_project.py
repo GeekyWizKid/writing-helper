@@ -262,6 +262,53 @@ class InitProjectTests(unittest.TestCase):
                 names,
             )
 
+    def test_publish_collision_never_replaces_competing_destination(self) -> None:
+        for competitor_kind in ("directory", "file", "symlink"):
+            with self.subTest(competitor_kind=competitor_kind):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    real_rename = self.module._rename_directory_noreplace
+                    first_publish = True
+
+                    def inject_competitor(source: Path, destination: Path) -> None:
+                        nonlocal first_publish
+                        if first_publish:
+                            first_publish = False
+                            if competitor_kind == "directory":
+                                destination.mkdir()
+                            elif competitor_kind == "file":
+                                destination.write_text("competitor", encoding="utf-8")
+                            else:
+                                destination.symlink_to(root / "competitor-target")
+                        real_rename(source, destination)
+
+                    with mock.patch.object(
+                        self.module,
+                        "_rename_directory_noreplace",
+                        side_effect=inject_competitor,
+                    ):
+                        result = self.module.init_project(
+                            root, "Race", "short-form", date="2026-07-17"
+                        )
+
+                    competitor = root / "2026-07-17-Race"
+                    project = Path(result["path"])
+                    self.assertEqual("2026-07-17-Race-02", project.name)
+                    state = self.common.load_state_yaml(project / "project.yaml")
+                    self.assertEqual(project.name, state["project"]["project_id"])
+                    if competitor_kind == "directory":
+                        self.assertTrue(competitor.is_dir())
+                        self.assertEqual([], list(competitor.iterdir()))
+                    elif competitor_kind == "file":
+                        self.assertEqual(
+                            "competitor", competitor.read_text(encoding="utf-8")
+                        )
+                    else:
+                        self.assertTrue(competitor.is_symlink())
+                        self.assertEqual(
+                            root / "competitor-target", competitor.readlink()
+                        )
+
     def test_rejects_invalid_primary_type(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(self.module.StudioError):

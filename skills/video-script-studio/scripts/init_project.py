@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -107,6 +109,49 @@ def _available_project_directory(root: Path, base_name: str) -> Path:
         sequence += 1
 
 
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Atomically rename a directory only when the destination is absent."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        source_bytes = os.fsencode(source)
+        destination_bytes = os.fsencode(destination)
+        if sys.platform == "darwin":
+            # RENAME_EXCL is 0x00000004 in the Darwin SDK's <sys/stdio.h>.
+            rename = libc.renamex_np
+            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            result = rename(source_bytes, destination_bytes, 0x00000004)
+        elif sys.platform.startswith("linux"):
+            # RENAME_NOREPLACE is 1 in the Linux UAPI <linux/fs.h>.
+            rename = libc.renameat2
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            result = rename(-100, source_bytes, -100, destination_bytes, 1)
+        else:
+            raise StudioError(
+                "Atomic no-replace publication is not supported on this platform."
+            )
+    except AttributeError as exc:
+        raise StudioError(
+            "Atomic no-replace publication is not supported on this platform."
+        ) from exc
+
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(
+            error_number, os.strerror(error_number), str(destination)
+        )
+    raise OSError(error_number, os.strerror(error_number), str(destination))
+
+
 @contextmanager
 def _locked_root(root: Path):
     """Serialize candidate selection and publication for a trusted root."""
@@ -181,7 +226,16 @@ def init_project(
             for filename in REQUIRED_ARTIFACTS:
                 atomic_write_text(staging / filename, _artifact_content(filename))
             atomic_write_text(staging / "project.yaml", dump_state_yaml(state))
-            staging.rename(project)
+            while True:
+                try:
+                    _rename_directory_noreplace(staging, project)
+                    break
+                except FileExistsError:
+                    project = _available_project_directory(root, base_name)
+                    state["project"]["project_id"] = project.name
+                    atomic_write_text(
+                        staging / "project.yaml", dump_state_yaml(state)
+                    )
         except Exception as exc:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
