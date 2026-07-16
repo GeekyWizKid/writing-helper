@@ -64,6 +64,9 @@ _PROJECT_KEYS = frozenset(
 _LOCK_NAME = ".video-script-studio-state.lock"
 JOURNAL_NAME = ".video-script-studio-reopen.json"
 _STAGING_PATTERN = re.compile(r"^\.reopen-txn-[0-9a-f]{32}$")
+_RESERVED_TEMP_PATTERN = re.compile(
+    r"^(?:\.project\.yaml|\.\.video-script-studio-reopen\.json)\.[0-9a-f]{32}\.tmp$"
+)
 _SNAPSHOT_PATTERN = re.compile(
     r"^[A-Za-z0-9_-]{1,200}-(?:brief|research|concept|outline|script)$"
 )
@@ -418,6 +421,7 @@ def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
         os.close(descriptor)
         descriptor = None
         os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
     except StudioError:
         raise
     except OSError as exc:
@@ -430,6 +434,7 @@ def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
 def _unlink_if_present(directory_fd: int, name: str) -> None:
     try:
         os.unlink(name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -488,6 +493,8 @@ def _read_journal_at(project_fd: int) -> dict[str, Any]:
         "old_stage",
         "reason",
         "snapshot_name",
+        "snapshot_dev",
+        "snapshot_ino",
         "stage",
         "staging_name",
         "target_approvals",
@@ -505,6 +512,10 @@ def _read_journal_at(project_fd: int) -> dict[str, Any]:
         or not _STAGING_PATTERN.fullmatch(value["staging_name"])
         or not isinstance(value.get("snapshot_name"), str)
         or not _SNAPSHOT_PATTERN.fullmatch(value["snapshot_name"])
+        or type(value.get("snapshot_dev")) is not int
+        or value["snapshot_dev"] < 0
+        or type(value.get("snapshot_ino")) is not int
+        or value["snapshot_ino"] <= 0
         or not isinstance(value.get("artifacts"), list)
         or any(item not in STAGE_FILES.values() for item in value["artifacts"])
         or len(set(value["artifacts"])) != len(value["artifacts"])
@@ -561,6 +572,20 @@ def _transaction_state_matches(state: dict[str, Any], journal: dict[str, Any], p
     )
 
 
+def _snapshot_identity_at(history_fd: int, name: str) -> tuple[int, int] | None:
+    try:
+        metadata = os.stat(name, dir_fd=history_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StudioError("Could not inspect the history snapshot identity.") from exc
+    return metadata.st_dev, metadata.st_ino
+
+
+def _journal_snapshot_identity(journal: dict[str, Any]) -> tuple[int, int]:
+    return journal["snapshot_dev"], journal["snapshot_ino"]
+
+
 def _validate_snapshot_at(history_fd: int, journal: dict[str, Any]) -> None:
     descriptor: int | None = None
     try:
@@ -603,8 +628,28 @@ def _validate_snapshot_at(history_fd: int, journal: dict[str, Any]) -> None:
             os.close(descriptor)
 
 
+def _cleanup_reserved_temps_at(project_fd: int) -> None:
+    removed = False
+    try:
+        for name in os.listdir(project_fd):
+            if not _RESERVED_TEMP_PATTERN.fullmatch(name):
+                continue
+            metadata = os.stat(name, dir_fd=project_fd, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                raise StudioError("A reserved project temporary path is unsafe.")
+            os.unlink(name, dir_fd=project_fd)
+            removed = True
+        if removed:
+            os.fsync(project_fd)
+    except StudioError:
+        raise
+    except OSError as exc:
+        raise StudioError("Could not clean reserved project temporary files.") from exc
+
+
 def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> None:
     """Reconcile a prior reopen using project.yaml as the commit record."""
+    _cleanup_reserved_temps_at(project_fd)
     has_journal = _entry_exists_at(project_fd, JOURNAL_NAME)
     if not has_journal and not scan_orphans:
         try:
@@ -633,14 +678,23 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
         staging_name = journal["staging_name"]
         snapshot_name = journal["snapshot_name"]
         staging_exists = _entry_exists_at(history_fd, staging_name)
+        final_identity = _snapshot_identity_at(history_fd, snapshot_name)
+        expected_identity = _journal_snapshot_identity(journal)
         if _transaction_state_matches(state, journal, "target"):
-            if not _entry_exists_at(history_fd, snapshot_name):
+            if final_identity is None:
                 raise StudioError("Committed project state is missing its history snapshot.")
+            if final_identity != expected_identity:
+                raise StudioError("The history snapshot was replaced during recovery.")
             _validate_snapshot_at(history_fd, journal)
         elif _transaction_state_matches(state, journal, "old"):
             # A remaining staging directory proves this transaction did not
             # publish; an identically named final entry therefore predates it.
-            if not staging_exists and _entry_exists_at(history_fd, snapshot_name):
+            if not staging_exists and final_identity is not None:
+                if final_identity != expected_identity:
+                    raise StudioError(
+                        "A competing history snapshot prevents automatic recovery."
+                    )
+                _validate_snapshot_at(history_fd, journal)
                 _remove_flat_directory_at(history_fd, snapshot_name)
         else:
             raise StudioError("Project state conflicts with its recovery journal.")
@@ -740,6 +794,9 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=history_fd,
             )
+            snapshot_metadata = os.fstat(snapshot_fd)
+            journal["snapshot_dev"] = snapshot_metadata.st_dev
+            journal["snapshot_ino"] = snapshot_metadata.st_ino
             try:
                 for filename, content in artifacts.items():
                     _write_exclusive_at(snapshot_fd, filename, content)
@@ -767,10 +824,12 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
             _transaction_boundary("state-committed")
             _unlink_if_present(project_fd, JOURNAL_NAME)
             state = target
-        except BaseException:
+        except BaseException as original_exc:
             try:
                 _recover_transaction_at(project_fd, scan_orphans=True)
             except Exception as recovery_exc:
+                if isinstance(original_exc, _StateCommittedError):
+                    raise original_exc from recovery_exc
                 raise StudioError(
                     "The reopen transaction requires recovery before continuing."
                 ) from recovery_exc

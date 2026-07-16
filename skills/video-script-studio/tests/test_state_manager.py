@@ -262,6 +262,79 @@ class StateManagerTests(unittest.TestCase):
                     self.assertEqual("research_pending", state["stage"])
                     self.assertEqual([], history)
 
+    def test_recovery_never_deletes_competing_snapshot_inode(self) -> None:
+        self.module.approve(self.project, "brief")
+        history = self.project / "history"
+        replacement: Path | None = None
+
+        def replace_published_snapshot(name):
+            nonlocal replacement
+            if name != "snapshot-published":
+                return
+            published = next(path for path in history.iterdir() if not path.name.startswith("."))
+            for child in published.iterdir():
+                child.unlink()
+            published.rmdir()
+            published.mkdir()
+            (published / "competitor.txt").write_text("keep", encoding="utf-8")
+            replacement = published
+            raise KeyboardInterrupt("replacement race")
+
+        with mock.patch.object(
+            self.module, "_transaction_boundary", side_effect=replace_published_snapshot
+        ):
+            with self.assertRaises(self.module.StudioError):
+                self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertIsNotNone(replacement)
+        self.assertEqual("keep", (replacement / "competitor.txt").read_text(encoding="utf-8"))
+        self.assertTrue((self.project / self.module.JOURNAL_NAME).is_file())
+
+    def test_recovery_fsync_failure_keeps_journal_until_next_operation(self) -> None:
+        self.module.approve(self.project, "brief")
+        real_fsync = self.module.os.fsync
+        fail_cleanup_sync = False
+
+        def interrupt_after_publish(name):
+            nonlocal fail_cleanup_sync
+            if name == "snapshot-published":
+                fail_cleanup_sync = True
+                raise KeyboardInterrupt(name)
+
+        def fail_first_cleanup_sync(descriptor):
+            nonlocal fail_cleanup_sync
+            if fail_cleanup_sync:
+                fail_cleanup_sync = False
+                raise OSError("cleanup directory sync failed")
+            return real_fsync(descriptor)
+
+        with (
+            mock.patch.object(
+                self.module, "_transaction_boundary", side_effect=interrupt_after_publish
+            ),
+            mock.patch.object(self.module.os, "fsync", side_effect=fail_first_cleanup_sync),
+        ):
+            with self.assertRaises(self.module.StudioError):
+                self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertTrue((self.project / self.module.JOURNAL_NAME).is_file())
+        self.assertEqual("research_pending", self.module.status(self.project)["stage"])
+        self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
+        self.assertEqual([], list((self.project / "history").iterdir()))
+
+    def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
+        stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")
+        stale_journal = self.project / (
+            "..video-script-studio-reopen.json." + "b" * 32 + ".tmp"
+        )
+        unrelated = self.project / (".project.yaml." + "g" * 32 + ".tmp")
+        for path in (stale_state, stale_journal, unrelated):
+            path.write_text("stale", encoding="utf-8")
+
+        self.module.status(self.project)
+
+        self.assertFalse(stale_state.exists())
+        self.assertFalse(stale_journal.exists())
+        self.assertEqual("stale", unrelated.read_text(encoding="utf-8"))
+
     def test_existing_snapshot_name_is_never_overwritten(self) -> None:
         self.module.approve(self.project, "brief")
         with mock.patch.object(self.module, "_history_timestamp", return_value="fixed"):
