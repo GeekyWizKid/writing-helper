@@ -694,7 +694,8 @@ def _recover_transaction_at(project_fd: int, *, scan_orphans: bool = False) -> N
                     raise StudioError(
                         "A competing history snapshot prevents automatic recovery."
                     )
-                _validate_snapshot_at(history_fd, journal)
+                # Exact inode binding makes cleanup resumable even if a prior
+                # crash already removed some children from this snapshot.
                 _remove_flat_directory_at(history_fd, snapshot_name)
         else:
             raise StudioError("Project state conflicts with its recovery journal.")

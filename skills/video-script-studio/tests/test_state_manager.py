@@ -320,6 +320,27 @@ class StateManagerTests(unittest.TestCase):
         self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
         self.assertEqual([], list((self.project / "history").iterdir()))
 
+    def test_recovery_resumes_partially_removed_bound_snapshot(self) -> None:
+        self.module.approve(self.project, "brief")
+        history = self.project / "history"
+
+        def interrupt_during_bound_snapshot_cleanup(name):
+            if name != "snapshot-published":
+                return
+            snapshot = next(path for path in history.iterdir() if not path.name.startswith("."))
+            next(snapshot.iterdir()).unlink()
+            raise KeyboardInterrupt(name)
+
+        with mock.patch.object(
+            self.module,
+            "_transaction_boundary",
+            side_effect=interrupt_during_bound_snapshot_cleanup,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertFalse((self.project / self.module.JOURNAL_NAME).exists())
+        self.assertEqual([], list(history.iterdir()))
+
     def test_recovery_removes_only_strict_reserved_root_temp_names(self) -> None:
         stale_state = self.project / (".project.yaml." + "a" * 32 + ".tmp")
         stale_journal = self.project / (
