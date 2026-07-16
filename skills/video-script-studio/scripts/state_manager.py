@@ -94,6 +94,14 @@ def _bounded_text(value: Any, field: str, *, nullable: bool = False) -> None:
         return
     if not isinstance(value, str) or len(value) > MAX_STATE_BYTES:
         raise StudioError(f"The {field} field is invalid.")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise StudioError(f"The {field} field is invalid.") from exc
+
+
+def _has_surrogate(value: str) -> bool:
+    return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
 
 
 def _expected_stage(approvals: dict[str, str]) -> str:
@@ -914,7 +922,12 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
     """Reopen an approved stage, preserving affected non-empty artifacts."""
     if stage not in STAGES:
         raise StudioError("The reopen stage is invalid.")
-    if not isinstance(reason, str) or not reason.strip() or len(reason) > MAX_REASON_CHARS:
+    if (
+        not isinstance(reason, str)
+        or not reason.strip()
+        or len(reason) > MAX_REASON_CHARS
+        or _has_surrogate(reason)
+    ):
         raise StudioError("The reopen reason must be nonblank and at most 4096 characters.")
 
     with _locked_project(project) as (resolved, project_fd):

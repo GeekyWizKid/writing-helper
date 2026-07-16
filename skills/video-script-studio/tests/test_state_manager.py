@@ -172,6 +172,22 @@ class StateManagerTests(unittest.TestCase):
         with self.assertRaises(self.module.StudioError):
             self.module.save_state(self.project, state)
 
+    def test_state_text_and_reopen_reason_reject_unpaired_surrogates_before_mutation(self) -> None:
+        original = (self.project / "project.yaml").read_bytes()
+        state = self.module.load_state(self.project)
+        state["project"]["title"] = "\ud800"
+        with self.assertRaises(self.module.StudioError):
+            self.module.save_state(self.project, state)
+        self.assertEqual(original, (self.project / "project.yaml").read_bytes())
+
+        self.module.approve(self.project, "brief")
+        history_before = sorted(path.name for path in (self.project / "history").iterdir())
+        state_before = (self.project / "project.yaml").read_bytes()
+        with self.assertRaises(self.module.StudioError):
+            self.module.reopen(self.project, "brief", reason="bad-\ud800-reason")
+        self.assertEqual(history_before, sorted(path.name for path in (self.project / "history").iterdir()))
+        self.assertEqual(state_before, (self.project / "project.yaml").read_bytes())
+
     def test_reopen_rolls_back_snapshot_when_state_publication_fails(self) -> None:
         self.module.approve(self.project, "brief")
         history = self.project / "history"

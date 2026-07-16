@@ -600,6 +600,22 @@ class ValidatePackTests(unittest.TestCase):
         self.state.save_state(self.project, state)
         self.assertIn("invalid_state", self.validator.validate_pack(self.project)["error_codes"])
 
+    def test_escaped_unpaired_surrogate_state_is_deterministic_invalid_state(self) -> None:
+        state_path = self.project / "project.yaml"
+        original = state_path.read_bytes()
+        replacements = (
+            (b'title: "Pack Test"', b'title: "\\ud800"'),
+            (b'disposition: "undecided"', b'disposition: "\\ud800"'),
+        )
+        for old, new in replacements:
+            with self.subTest(field=old.split(b":", 1)[0]):
+                self.assertIn(old, original)
+                state_path.write_bytes(original.replace(old, new, 1))
+                result = self.validator.validate_pack(self.project)
+                self.assertFalse(result["valid"])
+                self.assertIn("invalid_state", result["error_codes"])
+                state_path.write_bytes(original)
+
     def test_validator_and_completion_cli_emit_sanitized_json(self) -> None:
         stream = StringIO()
         with redirect_stdout(stream):

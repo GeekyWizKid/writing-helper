@@ -693,13 +693,16 @@ def _completion_digest_from_fingerprint(
     semantic_state["stage"] = "complete"
     semantic_state["completion_digest"] = None
     semantic["state"] = semantic_state
-    payload = json.dumps(
-        semantic,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    try:
+        payload = json.dumps(
+            semantic,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise StudioError("Could not serialize the completion digest safely.") from exc
     return hashlib.sha256(payload).hexdigest()
 
 
