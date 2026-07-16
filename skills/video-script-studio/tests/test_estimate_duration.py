@@ -50,6 +50,26 @@ class EstimateDurationTests(unittest.TestCase):
         # Two Han characters plus three ASCII tokens: AI, writing, and 2.0.
         self.assertEqual(5, result["estimated_seconds"])
 
+    def test_spoken_text_counts_han_zero_and_supplementary_ideographs(self) -> None:
+        result = self.duration.estimate(
+            {
+                "primary_type": "short-form",
+                "chinese_chars_per_minute": 60,
+                "segments": [{"text": "〇𠮷"}],
+            }
+        )
+        self.assertEqual(2, result["estimated_seconds"])
+
+    def test_english_period_separates_words_but_decimal_remains_one_token(self) -> None:
+        result = self.duration.estimate(
+            {
+                "primary_type": "long-form",
+                "english_words_per_minute": 60,
+                "segments": [{"text": "Hello.World 3.14"}],
+            }
+        )
+        self.assertEqual(3, result["estimated_seconds"])
+
     def test_spoken_routes_require_positive_finite_rates(self) -> None:
         base = {"primary_type": "short-form", "segments": [{"text": "你好"}]}
         for field, value in (
@@ -61,6 +81,16 @@ class EstimateDurationTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(self.duration.StudioError, field):
                     self.duration.estimate({**base, field: value})
+
+    def test_subnormal_positive_rate_raises_safe_error(self) -> None:
+        with self.assertRaisesRegex(self.duration.StudioError, "english_words_per_minute"):
+            self.duration.estimate(
+                {
+                    "primary_type": "short-form",
+                    "english_words_per_minute": 5e-324,
+                    "segments": [{"text": "word"}],
+                }
+            )
 
     def test_narrative_sums_declared_dialogue_action_response_and_pause(self) -> None:
         result = self.duration.estimate(
@@ -119,6 +149,20 @@ class EstimateDurationTests(unittest.TestCase):
         self.assertEqual(15, result["estimated_seconds"])
         self.assertEqual(["within_target"], result["diagnostics"])
 
+    def test_commercial_inclusive_tolerance_boundaries_are_stable(self) -> None:
+        base = {
+            "primary_type": "commercial",
+            "duration_method": "declared",
+            "target_seconds": 2,
+            "target_tolerance_seconds": 1,
+        }
+        for duration in (0.1, 0.3):
+            with self.subTest(duration=duration):
+                result = self.duration.estimate(
+                    {**base, "segments": [{"duration_seconds": duration}] * 10}
+                )
+                self.assertEqual(["within_target"], result["diagnostics"])
+
     def test_empty_segments_returns_stable_zero_result(self) -> None:
         result = self.duration.estimate({"primary_type": "visual-essay", "segments": []})
         self.assertEqual(
@@ -157,6 +201,29 @@ class EstimateDurationTests(unittest.TestCase):
                 ):
                     self.duration.estimate(payload)
 
+    def test_huge_integer_raises_safe_field_error(self) -> None:
+        with self.assertRaisesRegex(
+            self.duration.StudioError, r"segments\[0\]\.duration_seconds"
+        ):
+            self.duration.estimate(
+                {
+                    "primary_type": "visual-essay",
+                    "segments": [{"duration_seconds": 10**400}],
+                }
+            )
+
+    def test_finite_segment_values_with_nonfinite_sum_raise_safe_error(self) -> None:
+        with self.assertRaisesRegex(self.duration.StudioError, "estimated_seconds"):
+            self.duration.estimate(
+                {
+                    "primary_type": "visual-essay",
+                    "segments": [
+                        {"duration_seconds": 1e308},
+                        {"duration_seconds": 1e308},
+                    ],
+                }
+            )
+
     def test_invalid_payload_and_primary_type_are_rejected(self) -> None:
         for payload, field in (([], "payload"), ({"segments": []}, "primary_type"),
                                ({"primary_type": "podcast", "segments": []}, "primary_type")):
@@ -191,6 +258,52 @@ class EstimateDurationCliTests(unittest.TestCase):
         completed = self.run_cli("{malformed")
         self.assertEqual(2, completed.returncode)
         self.assertEqual({"error": "Could not read valid JSON data."}, json.loads(completed.stdout))
+        self.assertNotIn("Traceback", completed.stdout + completed.stderr)
+
+    def test_cli_sanitizes_valid_json_huge_integer(self) -> None:
+        completed = self.run_cli(
+            json.dumps(
+                {
+                    "primary_type": "visual-essay",
+                    "segments": [{"duration_seconds": 10**400}],
+                }
+            )
+        )
+        self.assertEqual(2, completed.returncode)
+        self.assertRegex(json.loads(completed.stdout)["error"], r"segments\[0\]\.duration_seconds")
+        self.assertNotIn("Traceback", completed.stdout + completed.stderr)
+
+    def test_cli_sanitizes_nonfinite_duration_sum(self) -> None:
+        completed = self.run_cli(
+            json.dumps(
+                {
+                    "primary_type": "visual-essay",
+                    "segments": [
+                        {"duration_seconds": 1e308},
+                        {"duration_seconds": 1e308},
+                    ],
+                }
+            )
+        )
+        self.assertEqual(2, completed.returncode)
+        self.assertEqual({"error": "estimated_seconds must be finite."}, json.loads(completed.stdout))
+        self.assertNotIn("Traceback", completed.stdout + completed.stderr)
+
+    def test_cli_sanitizes_subnormal_positive_rate(self) -> None:
+        completed = self.run_cli(
+            json.dumps(
+                {
+                    "primary_type": "short-form",
+                    "english_words_per_minute": 5e-324,
+                    "segments": [{"text": "word"}],
+                }
+            )
+        )
+        self.assertEqual(2, completed.returncode)
+        self.assertEqual(
+            {"error": "english_words_per_minute produces a non-finite duration."},
+            json.loads(completed.stdout),
+        )
         self.assertNotIn("Traceback", completed.stdout + completed.stderr)
 
 
