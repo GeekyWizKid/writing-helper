@@ -240,6 +240,16 @@ def _parse_state_yaml(content: str) -> dict[str, Any]:
     return state
 
 
+def parse_state_yaml(content: str) -> dict[str, Any]:
+    """Parse an in-memory state document using the supported YAML subset."""
+    if not isinstance(content, str):
+        raise StudioError("State YAML content must be text.")
+    try:
+        return _parse_state_yaml(content)
+    except RecursionError as exc:
+        raise StudioError("State YAML exceeds safe parsing depth.") from exc
+
+
 def load_state_yaml(path: Path) -> dict[str, Any]:
     """Read and parse a UTF-8 state YAML file."""
     try:
@@ -247,6 +257,6 @@ def load_state_yaml(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError) as exc:
         raise StudioError("Could not read the state YAML file.") from exc
     try:
-        return _parse_state_yaml(content)
+        return parse_state_yaml(content)
     except RecursionError as exc:
         raise StudioError("State YAML exceeds safe parsing depth.") from exc

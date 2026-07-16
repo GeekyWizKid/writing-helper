@@ -27,7 +27,7 @@ _SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 if str(_SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIRECTORY))
 
-from common import StudioError, _parse_state_yaml, dump_state_yaml
+from common import StudioError, dump_state_yaml, parse_state_yaml
 
 
 STAGES = ("brief", "research", "concept", "outline", "script")
@@ -116,7 +116,8 @@ def _validate_state(state: Any) -> dict[str, Any]:
     first_open = next((stage for stage in STAGES if approvals[stage] != "approved"), None)
     if first_open is not None and approvals[first_open] != "pending":
         raise StudioError("The next project approval must be pending.")
-    if state.get("stage") != _expected_stage(approvals):
+    expected_stage = _expected_stage(approvals)
+    if state.get("stage") not in ({expected_stage, "complete"} if expected_stage == "script_approved" else {expected_stage}):
         raise StudioError("The project stage does not match its approvals.")
 
     if state.get("schema_version") != "1" or state.get("artifacts") != _ARTIFACTS:
@@ -254,13 +255,17 @@ def _read_regular_at(directory_fd: int, name: str, limit: int, label: str) -> by
             os.close(descriptor)
 
 
-def _load_state_at(project_fd: int) -> dict[str, Any]:
+def _load_state_with_size_at(project_fd: int) -> tuple[dict[str, Any], int]:
     raw = _read_regular_at(project_fd, "project.yaml", MAX_STATE_BYTES, "project state")
     try:
-        state = _parse_state_yaml(raw.decode("utf-8"))
+        state = parse_state_yaml(raw.decode("utf-8"))
     except (UnicodeError, StudioError) as exc:
         raise StudioError("The project state file is invalid.") from exc
-    return _validate_state(state)
+    return _validate_state(state), len(raw)
+
+
+def _load_state_at(project_fd: int) -> dict[str, Any]:
+    return _load_state_with_size_at(project_fd)[0]
 
 
 def _write_all(descriptor: int, data: bytes) -> None:
@@ -633,7 +638,9 @@ def _read_journal_at(project_fd: int) -> dict[str, Any]:
         )
         if first_open is not None and approvals[first_open] != "pending":
             raise StudioError("The transaction journal approvals are invalid.")
-        if stage_value != _expected_stage(approvals):
+        expected_stage = _expected_stage(approvals)
+        valid_stages = {expected_stage, "complete"} if prefix == "old" and expected_stage == "script_approved" else {expected_stage}
+        if stage_value not in valid_stages:
             raise StudioError("The transaction journal stage is invalid.")
     transaction_stage = value["stage"]
     if value["old_approvals"][transaction_stage] != "approved":
@@ -964,6 +971,31 @@ def reopen(project: Path, stage: str, reason: str) -> dict[str, Any]:
         }
 
 
+def complete(project: Path) -> dict[str, Any]:
+    """Atomically mark a fully approved, valid production pack complete."""
+    with _locked_project(project) as (_, project_fd):
+        state, state_byte_count = _load_state_with_size_at(project_fd)
+        if state["stage"] == "complete":
+            return {"stage": "complete", "status": "already_complete"}
+        # Import lazily to keep module loading acyclic.  The internal validator
+        # consumes the already-read state under this same lock.
+        from validate_pack import _validate_pack_at
+
+        validation = _validate_pack_at(
+            project_fd, state=state, state_byte_count=state_byte_count
+        )
+        if not validation["valid"]:
+            return {
+                "stage": state["stage"],
+                "status": "blocked",
+                "validation": validation,
+            }
+        target = copy.deepcopy(state)
+        target["stage"] = "complete"
+        _save_state_at(project_fd, target)
+        return {"stage": "complete", "status": "completed", "validation": validation}
+
+
 def status(project: Path) -> dict[str, Any]:
     """Return a detached, minimal project approval summary."""
     state = load_state(project)
@@ -987,6 +1019,8 @@ def _parser() -> argparse.ArgumentParser:
     reopen_parser.add_argument("--reason", required=True)
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--project", required=True)
+    complete_parser = subparsers.add_parser("complete")
+    complete_parser.add_argument("--project", required=True)
     return parser
 
 
@@ -998,6 +1032,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = approve(project, arguments.stage)
         elif arguments.command == "reopen":
             payload = reopen(project, arguments.stage, arguments.reason)
+        elif arguments.command == "complete":
+            payload = complete(project)
         else:
             payload = status(project)
         exit_code = 0
