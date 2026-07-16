@@ -196,6 +196,7 @@ class StateManagerTests(unittest.TestCase):
             self.module.approve(self.project, "brief")
             with self.assertRaises(self.module.StudioError):
                 self.module.reopen(self.project, "brief", reason="rewrite")
+
             history.unlink()
             history.mkdir()
 
@@ -204,6 +205,26 @@ class StateManagerTests(unittest.TestCase):
             artifact.symlink_to(outside_path / "artifact.md")
             with self.assertRaises(self.module.StudioError):
                 self.module.reopen(self.project, "brief", reason="rewrite")
+
+    def test_rejects_fifo_state_and_artifact_without_blocking_or_mutation(self) -> None:
+        state_path = self.project / "project.yaml"
+        state_data = state_path.read_bytes()
+        state_path.unlink()
+        os.mkfifo(state_path)
+        with self.assertRaises(self.module.StudioError):
+            self.module.load_state(self.project)
+        state_path.unlink()
+        state_path.write_bytes(state_data)
+
+        self.module.approve(self.project, "brief")
+        approved_state = state_path.read_bytes()
+        artifact = self.project / "brief.md"
+        artifact.unlink()
+        os.mkfifo(artifact)
+        with self.assertRaises(self.module.StudioError):
+            self.module.reopen(self.project, "brief", reason="rewrite")
+        self.assertEqual(approved_state, state_path.read_bytes())
+        self.assertEqual([], list((self.project / "history").iterdir()))
 
     def test_rejects_malformed_and_oversized_state(self) -> None:
         state_path = self.project / "project.yaml"

@@ -200,7 +200,13 @@ def _locked_project(project: Path) -> Iterator[tuple[Path, int]]:
 def _read_regular_at(directory_fd: int, name: str, limit: int, label: str) -> bytes:
     descriptor: int | None = None
     try:
-        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
             raise StudioError(f"The {label} file is unsafe or too large.")
