@@ -474,15 +474,21 @@ write_production_prompt() {
   local destination=$1
   local project=$2
   local script_digest=$3
-  "$PYTHON_BIN" - "$destination" "$project" "$script_digest" <<'PY'
+  local skill_dir=$4
+  "$PYTHON_BIN" - "$destination" "$project" "$script_digest" "$skill_dir" <<'PY'
+import shlex
 import sys
 from pathlib import Path
 
 destination = Path(sys.argv[1])
-project, digest = sys.argv[2:]
+project, digest, skill_dir = sys.argv[2:]
+approve_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py approve --project {shlex.quote(project)} --stage script"
+status_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py status --project {shlex.quote(project)}"
 text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是第六个全新临时会话。必须先运行 status，以 project.yaml 和状态命令为准；不得修改已批准的 brief.md、research.md、sources.md、concepts.md 或 outline.md。
 
 我已逐字审阅 `script.md`，其 SHA-256 为 `{digest}`。我现在明确批准这个精确脚本版本；任何字节变化都会使批准失效。请执行 script approve，然后完成 storyboard.md、assets.md、publish.md。
+
+“批准”必须是实际状态机动作，不是口头确认：先逐字运行 `{approve_command}`，确认批准命令退出码为 0；若失败必须停止，不得伪造回执。完成三个制作文件后，再次运行 status：逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 script_approved，且 approvals 中 brief、research、concept、outline、script 全部为 approved；否则停止，不得输出成功 JSON。
 
 必须兑现已批准的视觉随笔契约：使用稳定场景编号 S01—S05；轮胎纹理拓印的可见试做；油墨糊掉路径并撕裂纸面的失败；裂痕由失败痕迹变成路线；车轮空转、滚墨、撕纸等环境声；至少三处明确写“无旁白”，旁白只补不可见的意义转变。storyboard.md 必须使用三个独立二级标题 ## 可见行动、## 视觉母题、## 环境声，每个标题下至少写一句实质内容。不得复制 Gawx 的具体作品、标题或措辞，不得生成媒体或发布。
 
@@ -873,7 +879,7 @@ SCRIPT_HASH="$(combined_sha256 "$PROJECT/script.md")"
 
 TURN6_PROMPT="$RUN_ROOT/turn-6.md"
 TURN6_RESULT="$RUN_ROOT/turn-6.json"
-write_production_prompt "$TURN6_PROMPT" "$PROJECT" "$SCRIPT_HASH"
+write_production_prompt "$TURN6_PROMPT" "$PROJECT" "$SCRIPT_HASH" "$INSTALLED_SKILL"
 run_codex_turn "$TURN6_PROMPT" "$RUNTIME_REVIEW_SCHEMA" "$TURN6_RESULT" "$TMP_LOGS/turn-6.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"

@@ -260,6 +260,10 @@ class HarnessContractTests(unittest.TestCase):
             "storyboard stage is missing a substantive route anchor",
             "每个标题下至少写一句实质内容",
             "## 可见行动、## 视觉母题、## 环境声",
+            "python3 scripts/state_manager.py approve --project",
+            "--stage script",
+            "再次运行 status",
+            "script_approved",
         ):
             self.assertIn(required, content)
         self.assertTrue((E2E_ROOT / "review-result.schema.json").is_file())
