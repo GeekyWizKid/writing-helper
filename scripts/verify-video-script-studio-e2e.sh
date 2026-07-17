@@ -486,7 +486,7 @@ text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是�
 
 必须兑现已批准的视觉随笔契约：使用稳定场景编号 S01—S05；轮胎纹理拓印的可见试做；油墨糊掉路径并撕裂纸面的失败；裂痕由失败痕迹变成路线；车轮空转、滚墨、撕纸等环境声；至少三处明确写“无旁白”，旁白只补不可见的意义转变。storyboard.md 必须使用三个独立二级标题 ## 可见行动、## 视觉母题、## 环境声，每个标题下至少写一句实质内容。不得复制 Gawx 的具体作品、标题或措辞，不得生成媒体或发布。
 
-本轮只承担制作作者职责：只改写 storyboard.md、assets.md、publish.md，绝对不得改写 review.md，不得评分，不得运行 complete。把独立评审留给下一个全新会话。最终严格输出 JSON：project_path 为真实绝对路径，stage 为 independent-review，authored_artifacts 精确列出 storyboard.md、assets.md、publish.md。
+本轮只承担制作作者职责：只改写 storyboard.md、assets.md、publish.md，绝对不得改写 review.md，不得评分，不得运行 complete。把独立评审留给下一个全新会话。最终严格输出 JSON：project_path 为真实绝对路径，stage 为 independent-review；authored_artifacts 必须是对象，精确写成 {{"storyboard":"storyboard.md","assets":"assets.md","publish":"publish.md"}}，不得使用数组。
 """
 destination.write_text(text, encoding="utf-8")
 PY
@@ -696,7 +696,11 @@ if Path(value.get("project_path", "")).resolve() != Path(sys.argv[2]).resolve():
 if value.get("stage") != "independent-review":
     raise SystemExit("production turn did not stop for independent review")
 artifacts = value.get("authored_artifacts", [])
-if len(artifacts) != 3 or set(artifacts) != {"storyboard.md", "assets.md", "publish.md"}:
+if artifacts != {
+    "storyboard": "storyboard.md",
+    "assets": "assets.md",
+    "publish": "publish.md",
+}:
     raise SystemExit("production turn reported the wrong author artifacts")
 PY
 }

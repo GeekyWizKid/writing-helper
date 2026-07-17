@@ -280,6 +280,9 @@ class HarnessContractTests(unittest.TestCase):
         self.assertNotIn("预先批准所有", initial)
 
         gate_schema = json.loads((E2E_ROOT / "gate-result.schema.json").read_text())
+        review_schema = json.loads(
+            (E2E_ROOT / "review-result.schema.json").read_text()
+        )
         final_schema = json.loads(
             (E2E_ROOT / "expected-result.schema.json").read_text()
         )
@@ -292,6 +295,17 @@ class HarnessContractTests(unittest.TestCase):
         self.assertEqual(["visual-essay"], final_schema["properties"]["primary_type"]["enum"])
         self.assertEqual(["complete"], final_schema["properties"]["stage"]["enum"])
         self.assertEqual([True], final_schema["properties"]["validation_valid"]["enum"])
+        authored = review_schema["properties"]["authored_artifacts"]
+        self.assertEqual("object", authored["type"])
+        self.assertFalse(authored["additionalProperties"])
+        self.assertEqual(
+            {"storyboard", "assets", "publish"}, set(authored["required"])
+        )
+        self.assertEqual(
+            ["storyboard.md"], authored["properties"]["storyboard"]["enum"]
+        )
+        self.assertEqual(["assets.md"], authored["properties"]["assets"]["enum"])
+        self.assertEqual(["publish.md"], authored["properties"]["publish"]["enum"])
         for schema_path in E2E_ROOT.glob("*.schema.json"):
             self.assertNotIn('"const"', schema_path.read_text(encoding="utf-8"))
 

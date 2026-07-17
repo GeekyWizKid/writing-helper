@@ -6,8 +6,14 @@
     "project_path": {"type": "string"},
     "stage": {"enum": ["independent-review"]},
     "authored_artifacts": {
-      "type": "array",
-      "items": {"enum": ["storyboard.md", "assets.md", "publish.md"]}
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storyboard", "assets", "publish"],
+      "properties": {
+        "storyboard": {"enum": ["storyboard.md"]},
+        "assets": {"enum": ["assets.md"]},
+        "publish": {"enum": ["publish.md"]}
+      }
     }
   }
 }
