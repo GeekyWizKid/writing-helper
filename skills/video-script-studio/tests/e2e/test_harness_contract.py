@@ -106,6 +106,12 @@ class HarnessContractTests(unittest.TestCase):
             ["bash", "-n", str(HARNESS)], capture_output=True, text=True, check=False
         )
         self.assertEqual(0, syntax.returncode, syntax.stderr)
+        content = HARNESS.read_text(encoding="utf-8")
+        python_blocks = re.findall(r"<<'PY'\n(.*?)\nPY", content, re.DOTALL)
+        self.assertTrue(python_blocks)
+        for index, block in enumerate(python_blocks, start=1):
+            with self.subTest(embedded_python=index):
+                compile(block, f"{HARNESS.name}:heredoc-{index}", "exec")
         with tempfile.TemporaryDirectory() as directory:
             temporary_root = Path(directory).resolve()
             home = temporary_root / "home"
@@ -155,7 +161,6 @@ class HarnessContractTests(unittest.TestCase):
         )
         self.assertEqual(0, current.returncode, current.stderr)
 
-        content = HARNESS.read_text(encoding="utf-8")
         self.assertIsNone(
             re.search(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]", content),
             "brace shell variables before adjacent non-ASCII punctuation",

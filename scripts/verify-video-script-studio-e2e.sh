@@ -403,7 +403,7 @@ run_codex_turn() {
   "$PYTHON_BIN" - "$result_path" <<'PY'
 import json
 import sys
-  json.loads(open(sys.argv[1], encoding="utf-8").read())
+json.loads(open(sys.argv[1], encoding="utf-8").read())
 PY
 }
 
