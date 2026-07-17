@@ -484,7 +484,7 @@ text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是�
 
 我已逐字审阅 `script.md`，其 SHA-256 为 `{digest}`。我现在明确批准这个精确脚本版本；任何字节变化都会使批准失效。请执行 script approve，然后完成 storyboard.md、assets.md、publish.md。
 
-必须兑现已批准的视觉随笔契约：使用稳定场景编号 S01—S05；轮胎纹理拓印的可见试做；油墨糊掉路径并撕裂纸面的失败；裂痕由失败痕迹变成路线；车轮空转、滚墨、撕纸等环境声；至少三处明确写“无旁白”，旁白只补不可见的意义转变。不得复制 Gawx 的具体作品、标题或措辞，不得生成媒体或发布。
+必须兑现已批准的视觉随笔契约：使用稳定场景编号 S01—S05；轮胎纹理拓印的可见试做；油墨糊掉路径并撕裂纸面的失败；裂痕由失败痕迹变成路线；车轮空转、滚墨、撕纸等环境声；至少三处明确写“无旁白”，旁白只补不可见的意义转变。storyboard.md 必须使用三个独立二级标题 ## 可见行动、## 视觉母题、## 环境声，每个标题下至少写一句实质内容。不得复制 Gawx 的具体作品、标题或措辞，不得生成媒体或发布。
 
 本轮只承担制作作者职责：只改写 storyboard.md、assets.md、publish.md，绝对不得改写 review.md，不得评分，不得运行 complete。把独立评审留给下一个全新会话。最终严格输出 JSON：project_path 为真实绝对路径，stage 为 independent-review，authored_artifacts 精确列出 storyboard.md、assets.md、publish.md。
 """
@@ -837,7 +837,7 @@ TURN5_PROMPT="$RUN_ROOT/turn-5.md"
 TURN5_RESULT="$RUN_ROOT/turn-5.json"
 TURN5_SCHEMA="$RUN_ROOT/turn-5.schema.json"
 write_resume_prompt "$TURN5_PROMPT" "$PROJECT" outline "outline.md" "$OUTLINE_HASH" script script.md \
-  "写同时包含干净表演稿与制作执行稿的 script.md，并包含全部确定性必需标题及旁白克制段。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
+  "写同时包含干净表演稿与制作执行稿的 script.md。必须按顺序使用 ## 最终命题、## 目标、## 预计时长、## 干净表演稿、## 制作执行稿、## 待人工确认事项、## 可删段落、## 短版本切点、## 旁白克制；每个标题下至少写一句实质内容，没有待办时在待人工确认事项下写“无待办”，不得留空。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
 write_gate_schema "$TURN5_SCHEMA" script script.md
 run_codex_turn "$TURN5_PROMPT" "$TURN5_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
@@ -847,6 +847,21 @@ assert_approved_unchanged "$OUTLINE_HASH" "$PROJECT/outline.md"
 assert_gate_result "$TURN5_RESULT" "$PROJECT" script script.md
 assert_exact_approvals "$PROJECT" script_pending "brief,research,concept,outline" "$RUN_ROOT/status-5.json"
 assert_matches_initializer_baseline "$PROJECT" brief.md research.md sources.md concepts.md outline.md script.md
+"$PYTHON_BIN" - "$INSTALLED_SKILL/scripts" "$PROJECT/script.md" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from validate_pack import SCRIPT_HEADINGS, _heading_sections, _meaningful
+
+sections = _heading_sections(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for heading in (*SCRIPT_HEADINGS, "旁白克制"):
+    values = sections.get(heading)
+    if not values:
+        raise SystemExit("script stage is missing a required section")
+    if not any(_meaningful(value) for value in values):
+        raise SystemExit("script stage contains an empty required section")
+PY
 SNAPSHOT5="$RUN_ROOT/snapshot-5.json"
 snapshot_project "$PROJECT" "$SNAPSHOT5"
 assert_only_paths_changed "$SNAPSHOT4" "$SNAPSHOT5" project.yaml script.md
@@ -864,6 +879,19 @@ assert_approved_unchanged "$SCRIPT_HASH" "$PROJECT/script.md"
 assert_review_result "$TURN6_RESULT" "$PROJECT"
 assert_exact_approvals "$PROJECT" script_approved "brief,research,concept,outline,script" "$RUN_ROOT/status-6.json"
 assert_matches_initializer_baseline "$PROJECT" brief.md research.md sources.md concepts.md outline.md script.md storyboard.md assets.md publish.md
+"$PYTHON_BIN" - "$INSTALLED_SKILL/scripts" "$PROJECT/storyboard.md" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from validate_pack import ROUTE_ANCHORS, _heading_sections, _meaningful
+
+sections = _heading_sections(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for heading in ROUTE_ANCHORS["visual-essay"]["storyboard.md"]:
+    values = sections.get(heading)
+    if not values or not any(_meaningful(value) for value in values):
+        raise SystemExit("storyboard stage is missing a substantive route anchor")
+PY
 SNAPSHOT6="$RUN_ROOT/snapshot-6.json"
 snapshot_project "$PROJECT" "$SNAPSHOT6"
 assert_only_paths_changed "$SNAPSHOT5" "$SNAPSHOT6" project.yaml storyboard.md assets.md publish.md

@@ -256,6 +256,10 @@ class HarnessContractTests(unittest.TestCase):
             "第七会话",
             '"estimated_seconds": 90',
             '"segment_count": 5',
+            "script stage contains an empty required section",
+            "storyboard stage is missing a substantive route anchor",
+            "每个标题下至少写一句实质内容",
+            "## 可见行动、## 视觉母题、## 环境声",
         ):
             self.assertIn(required, content)
         self.assertTrue((E2E_ROOT / "review-result.schema.json").is_file())
