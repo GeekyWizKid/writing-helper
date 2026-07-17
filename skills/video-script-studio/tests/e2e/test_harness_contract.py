@@ -266,6 +266,8 @@ class HarnessContractTests(unittest.TestCase):
             "script_approved",
             '"schema_version":1',
             "research stage source manifest is invalid",
+            "expected_pending_stage",
+            "批准后再次运行 status",
         ):
             self.assertIn(required, content)
         self.assertTrue((E2E_ROOT / "review-result.schema.json").is_file())

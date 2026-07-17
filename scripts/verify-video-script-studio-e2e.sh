@@ -451,20 +451,25 @@ write_resume_prompt() {
   local next_gate=$6
   local next_artifact=$7
   local instructions=$8
+  local skill_dir=$9
   "$PYTHON_BIN" - "$destination" "$project" "$approved_stage" "$approved_files" \
-    "$approved_digest" "$next_gate" "$next_artifact" "$instructions" <<'PY'
+    "$approved_digest" "$next_gate" "$next_artifact" "$instructions" "$skill_dir" <<'PY'
+import shlex
 import sys
 from pathlib import Path
 
 destination = Path(sys.argv[1])
-project, approved_stage, approved_files, digest, next_gate, next_artifact, instructions = sys.argv[2:]
+project, approved_stage, approved_files, digest, next_gate, next_artifact, instructions, skill_dir = sys.argv[2:]
+expected_pending_stage = f"{next_gate}_pending"
+approve_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py approve --project {shlex.quote(project)} --stage {shlex.quote(approved_stage)}"
+status_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py status --project {shlex.quote(project)}"
 text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是新的独立会话，必须先运行 status，以 project.yaml 和状态命令为准；读取当前阶段需要的产物，不得改写已经批准的上游文件。
 
-我已逐字审阅 `{approved_files}`，其组合 SHA-256 为 `{digest}`。我现在明确批准这一个精确版本的 `{approved_stage}` 阶段；任何字节变化都会使本批准失效。请先执行该阶段的 approve 命令，再继续。
+我已逐字审阅 `{approved_files}`，其组合 SHA-256 为 `{digest}`。我现在明确批准这一个精确版本的 `{approved_stage}` 阶段；任何字节变化都会使本批准失效。批准不是口头确认：逐字运行 `{approve_command}`，确认退出码为 0；失败就停止。批准后再次运行 status：逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 `{expected_pending_stage}` 且 approvals.{approved_stage} 为 approved，否则停止。
 
 {instructions}
 
-本轮只推进到 `{next_gate}` 确认门：创建并展示 `{next_artifact}` 所需内容，但不得批准 `{next_gate}`，不得跨越后续确认门。最终严格输出 JSON：`project_path` 为真实绝对路径，`awaiting_gate` 为 `{next_gate}`，`artifact` 为 `{next_artifact}`。
+本轮只推进到 `{next_gate}` 确认门：创建并展示 `{next_artifact}` 所需内容，但不得批准 `{next_gate}`，不得跨越后续确认门。写完后再次运行 `{status_command}`，必须确认 stage 仍为 `{expected_pending_stage}`。最终严格输出 JSON：`project_path` 为真实绝对路径，`awaiting_gate` 为 `{next_gate}`，`artifact` 为 `{next_artifact}`。
 """
 destination.write_text(text, encoding="utf-8")
 PY
@@ -759,7 +764,8 @@ TURN2_PROMPT="$RUN_ROOT/turn-2.md"
 TURN2_RESULT="$RUN_ROOT/turn-2.json"
 TURN2_SCHEMA="$RUN_ROOT/turn-2.schema.json"
 write_resume_prompt "$TURN2_PROMPT" "$PROJECT" brief "brief.md" "$BRIEF_HASH" research research.md \
-  '记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md。frontmatter 必须是合法 JSON 对象且字段只能有这五项：{"schema_version":1,"research_required":false,"decision_reason":"本项目只使用用户给定的创作命题，不引入外部事实主张。","sources":[],"claims":[]}；不得省略 schema_version，不得把数字 1 写成字符串。把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。'
+  '记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md。frontmatter 必须是合法 JSON 对象且字段只能有这五项：{"schema_version":1,"research_required":false,"decision_reason":"本项目只使用用户给定的创作命题，不引入外部事实主张。","sources":[],"claims":[]}；不得省略 schema_version，不得把数字 1 写成字符串。把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。' \
+  "$INSTALLED_SKILL"
 write_gate_schema "$TURN2_SCHEMA" research research.md
 run_codex_turn "$TURN2_PROMPT" "$TURN2_SCHEMA" "$TURN2_RESULT" "$TMP_LOGS/turn-2.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
@@ -806,7 +812,8 @@ TURN3_PROMPT="$RUN_ROOT/turn-3.md"
 TURN3_RESULT="$RUN_ROOT/turn-3.json"
 TURN3_SCHEMA="$RUN_ROOT/turn-3.schema.json"
 write_resume_prompt "$TURN3_PROMPT" "$PROJECT" research "research.md + sources.md" "$RESEARCH_HASH" concept concepts.md \
-  "生成恰好三个实质不同且可拍的概念，只能使用三个二级标题：## 方案 A、## 方案 B、## 方案 C。A 必须是‘纹理档案’，B 必须是‘双重轨迹’并标记推荐但待用户选择，C 必须是‘声音地图’；逐项写观看理由、叙事引擎、转折、声音、难度和风险，不要替用户批准。完成后停止。"
+  "生成恰好三个实质不同且可拍的概念，只能使用三个二级标题：## 方案 A、## 方案 B、## 方案 C。A 必须是‘纹理档案’，B 必须是‘双重轨迹’并标记推荐但待用户选择，C 必须是‘声音地图’；逐项写观看理由、叙事引擎、转折、声音、难度和风险，不要替用户批准。完成后停止。" \
+  "$INSTALLED_SKILL"
 write_gate_schema "$TURN3_SCHEMA" concept concepts.md
 run_codex_turn "$TURN3_PROMPT" "$TURN3_SCHEMA" "$TURN3_RESULT" "$TMP_LOGS/turn-3.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
@@ -823,7 +830,8 @@ TURN4_PROMPT="$RUN_ROOT/turn-4.md"
 TURN4_RESULT="$RUN_ROOT/turn-4.json"
 TURN4_SCHEMA="$RUN_ROOT/turn-4.schema.json"
 write_resume_prompt "$TURN4_PROMPT" "$PROJECT" concept "concepts.md（明确选择方案 B：双重轨迹）" "$CONCEPT_HASH" outline outline.md \
-  "按已选择的方案 B：双重轨迹写 outline.md，必须逐字记录‘方案 B：双重轨迹’，必须有 ## 体验节点 标题和稳定节点 S01—S05；明确写可见试做、失败、调整、视觉母题变化、环境声和主题恢复，不要写长篇解释性旁白。完成后停止。"
+  "按已选择的方案 B：双重轨迹写 outline.md，必须逐字记录‘方案 B：双重轨迹’，必须有 ## 体验节点 标题和稳定节点 S01—S05；明确写可见试做、失败、调整、视觉母题变化、环境声和主题恢复，不要写长篇解释性旁白。完成后停止。" \
+  "$INSTALLED_SKILL"
 write_gate_schema "$TURN4_SCHEMA" outline outline.md
 run_codex_turn "$TURN4_PROMPT" "$TURN4_SCHEMA" "$TURN4_RESULT" "$TMP_LOGS/turn-4.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
@@ -878,7 +886,8 @@ TURN5_PROMPT="$RUN_ROOT/turn-5.md"
 TURN5_RESULT="$RUN_ROOT/turn-5.json"
 TURN5_SCHEMA="$RUN_ROOT/turn-5.schema.json"
 write_resume_prompt "$TURN5_PROMPT" "$PROJECT" outline "outline.md" "$OUTLINE_HASH" script script.md \
-  "写同时包含干净表演稿与制作执行稿的 script.md。必须按顺序使用 ## 最终命题、## 目标、## 预计时长、## 干净表演稿、## 制作执行稿、## 待人工确认事项、## 可删段落、## 短版本切点、## 旁白克制；每个标题下至少写一句实质内容，没有待办时在待人工确认事项下写“无待办”，不得留空。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。"
+  "写同时包含干净表演稿与制作执行稿的 script.md。必须按顺序使用 ## 最终命题、## 目标、## 预计时长、## 干净表演稿、## 制作执行稿、## 待人工确认事项、## 可删段落、## 短版本切点、## 旁白克制；每个标题下至少写一句实质内容，没有待办时在待人工确认事项下写“无待办”，不得留空。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。" \
+  "$INSTALLED_SKILL"
 write_gate_schema "$TURN5_SCHEMA" script script.md
 run_codex_turn "$TURN5_PROMPT" "$TURN5_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
