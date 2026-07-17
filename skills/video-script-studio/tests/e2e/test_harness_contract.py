@@ -204,13 +204,16 @@ class HarnessContractTests(unittest.TestCase):
             "execute_official_validator",
             "official validator execution failed",
             "video-script-studio-e2e ok",
+            "MAX_AUTHORING_ATTEMPTS=2",
+            "run_codex_turn_until_authored",
         ):
             self.assertIn(required, content)
         self.assertNotIn("dangerously-bypass-approvals-and-sandbox", content)
         self.assertNotIn("redacted_log_tail", content)
         self.assertNotIn("VIDEO_SCRIPT_STUDIO_OFFICIAL_VALIDATOR", content)
         self.assertIn("private log withheld", content)
-        self.assertEqual(7, content.count("run_codex_turn "))
+        self.assertEqual(2, content.count("run_codex_turn "))
+        self.assertEqual(6, content.count("run_codex_turn_until_authored "))
         self.assertEqual(5, content.count("write_gate_schema \"$TURN"))
         self.assertEqual(
             7, content.count('assert_matches_initializer_baseline "$PROJECT"')

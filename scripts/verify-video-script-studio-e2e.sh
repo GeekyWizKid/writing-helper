@@ -147,6 +147,7 @@ ORIGINAL_CODEX_HOME="${CODEX_HOME:-$ORIGINAL_HOME/.codex}"
 ORIGINAL_AUTH="$ORIGINAL_CODEX_HOME/auth.json"
 OFFICIAL_VALIDATOR="$ORIGINAL_CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py"
 TURN_TIMEOUT="${VIDEO_SCRIPT_STUDIO_E2E_TIMEOUT_SECONDS:-900}"
+MAX_AUTHORING_ATTEMPTS=2
 [[ "$TURN_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "timeout must be a positive integer"
 
 RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/video-script-studio-e2e.XXXXXX")"
@@ -402,8 +403,51 @@ run_codex_turn() {
   "$PYTHON_BIN" - "$result_path" <<'PY'
 import json
 import sys
-json.loads(open(sys.argv[1], encoding="utf-8").read())
+  json.loads(open(sys.argv[1], encoding="utf-8").read())
 PY
+}
+
+artifacts_are_authored() {
+  local project=$1
+  shift
+  "$PYTHON_BIN" - "$BASELINE_PROJECT" "$project" "$@" <<'PY'
+import sys
+from pathlib import Path
+
+baseline, project = map(Path, sys.argv[1:3])
+names = sys.argv[3:]
+allowed = {
+    "brief.md", "research.md", "concepts.md", "outline.md", "script.md",
+    "storyboard.md", "assets.md", "publish.md", "sources.md", "review.md",
+}
+if not names or any(name not in allowed for name in names):
+    raise SystemExit(2)
+for name in names:
+    actual = (project / name).read_bytes()
+    if not actual.strip() or actual == (baseline / name).read_bytes():
+        raise SystemExit(1)
+PY
+}
+
+run_codex_turn_until_authored() {
+  local prompt=$1
+  local schema=$2
+  local result=$3
+  local log=$4
+  local project=$5
+  shift 5
+  local attempt attempt_log
+  for ((attempt = 1; attempt <= MAX_AUTHORING_ATTEMPTS; attempt++)); do
+    attempt_log="$log"
+    if ((attempt > 1)); then
+      attempt_log="${log%.log}-retry-${attempt}.log"
+    fi
+    run_codex_turn "$prompt" "$schema" "$result" "$attempt_log"
+    if artifacts_are_authored "$project" "$@"; then
+      return 0
+    fi
+  done
+  die "expected stage artifact still matches its initializer skeleton"
 }
 
 write_gate_schema() {
@@ -786,7 +830,8 @@ write_resume_prompt "$TURN2_PROMPT" "$PROJECT" brief "brief.md" "$BRIEF_HASH" re
   '记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md。frontmatter 必须是合法 JSON 对象且字段只能有这五项：{"schema_version":1,"research_required":false,"decision_reason":"本项目只使用用户给定的创作命题，不引入外部事实主张。","sources":[],"claims":[]}；不得省略 schema_version，不得把数字 1 写成字符串。把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。' \
   "$INSTALLED_SKILL"
 write_gate_schema "$TURN2_SCHEMA" research research.md
-run_codex_turn "$TURN2_PROMPT" "$TURN2_SCHEMA" "$TURN2_RESULT" "$TMP_LOGS/turn-2.log"
+run_codex_turn_until_authored "$TURN2_PROMPT" "$TURN2_SCHEMA" "$TURN2_RESULT" \
+  "$TMP_LOGS/turn-2.log" "$PROJECT" research.md sources.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_gate_result "$TURN2_RESULT" "$PROJECT" research research.md
 assert_exact_approvals "$PROJECT" research_pending "brief" "$RUN_ROOT/status-2.json"
@@ -836,7 +881,8 @@ write_resume_prompt "$TURN3_PROMPT" "$PROJECT" research "research.md + sources.m
   "生成恰好三个实质不同且可拍的概念，只能使用三个二级标题：## 方案 A、## 方案 B、## 方案 C。A 必须是‘纹理档案’，B 必须是‘双重轨迹’并标记推荐但待用户选择，C 必须是‘声音地图’；逐项写观看理由、叙事引擎、转折、声音、难度和风险，不要替用户批准。完成后停止。" \
   "$INSTALLED_SKILL"
 write_gate_schema "$TURN3_SCHEMA" concept concepts.md
-run_codex_turn "$TURN3_PROMPT" "$TURN3_SCHEMA" "$TURN3_RESULT" "$TMP_LOGS/turn-3.log"
+run_codex_turn_until_authored "$TURN3_PROMPT" "$TURN3_SCHEMA" "$TURN3_RESULT" \
+  "$TMP_LOGS/turn-3.log" "$PROJECT" concepts.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_gate_result "$TURN3_RESULT" "$PROJECT" concept concepts.md
@@ -856,7 +902,8 @@ write_resume_prompt "$TURN4_PROMPT" "$PROJECT" concept "concepts.md（明确选�
   "按已选择的方案 B：双重轨迹写 outline.md，必须逐字记录‘方案 B：双重轨迹’，必须有 ## 体验节点 标题和稳定节点 S01—S05；明确写可见试做、失败、调整、视觉母题变化、环境声和主题恢复，不要写长篇解释性旁白。完成后停止。" \
   "$INSTALLED_SKILL"
 write_gate_schema "$TURN4_SCHEMA" outline outline.md
-run_codex_turn "$TURN4_PROMPT" "$TURN4_SCHEMA" "$TURN4_RESULT" "$TMP_LOGS/turn-4.log"
+run_codex_turn_until_authored "$TURN4_PROMPT" "$TURN4_SCHEMA" "$TURN4_RESULT" \
+  "$TMP_LOGS/turn-4.log" "$PROJECT" outline.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
@@ -914,7 +961,8 @@ write_resume_prompt "$TURN5_PROMPT" "$PROJECT" outline "outline.md" "$OUTLINE_HA
   "写同时包含干净表演稿与制作执行稿的 script.md。必须按顺序使用 ## 最终命题、## 目标、## 预计时长、## 干净表演稿、## 制作执行稿、## 待人工确认事项、## 可删段落、## 短版本切点、## 旁白克制；每个标题下至少写一句实质内容，没有待办时在待人工确认事项下写“无待办”，不得留空。读取 harness 已用复制版 estimator CLI 生成的 $DURATION_INPUT 和 ${DURATION_RESULT}；在 ## 预计时长 中逐字记录 duration_input_sha256: ${DURATION_INPUT_HASH}、duration_result_sha256: ${DURATION_RESULT_HASH}、estimated_seconds: 90、segment_count: 5，以及五行 S01 duration_seconds: 18、S02 duration_seconds: 22、S03 duration_seconds: 20、S04 duration_seconds: 15、S05 duration_seconds: 15。完成后停止。" \
   "$INSTALLED_SKILL"
 write_gate_schema "$TURN5_SCHEMA" script script.md
-run_codex_turn "$TURN5_PROMPT" "$TURN5_SCHEMA" "$TURN5_RESULT" "$TMP_LOGS/turn-5.log"
+run_codex_turn_until_authored "$TURN5_PROMPT" "$TURN5_SCHEMA" "$TURN5_RESULT" \
+  "$TMP_LOGS/turn-5.log" "$PROJECT" script.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
@@ -947,7 +995,8 @@ assert_exact_approvals "$PROJECT" script_approved "brief,research,concept,outlin
 TURN6_PROMPT="$RUN_ROOT/turn-6.md"
 TURN6_RESULT="$RUN_ROOT/turn-6.json"
 write_production_prompt "$TURN6_PROMPT" "$PROJECT" "$SCRIPT_HASH" "$INSTALLED_SKILL"
-run_codex_turn "$TURN6_PROMPT" "$RUNTIME_REVIEW_SCHEMA" "$TURN6_RESULT" "$TMP_LOGS/turn-6.log"
+run_codex_turn_until_authored "$TURN6_PROMPT" "$RUNTIME_REVIEW_SCHEMA" \
+  "$TURN6_RESULT" "$TMP_LOGS/turn-6.log" "$PROJECT" storyboard.md assets.md publish.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
@@ -977,7 +1026,8 @@ REVIEWER_SESSION="turn-7-independent-$(combined_sha256 "$TURN6_RESULT")"
 TURN7_PROMPT="$RUN_ROOT/turn-7.md"
 TURN7_RESULT="$RUN_ROOT/turn-7.json"
 write_independent_review_prompt "$TURN7_PROMPT" "$PROJECT" "$REVIEWER_SESSION"
-run_codex_turn "$TURN7_PROMPT" "$RUNTIME_FINAL_SCHEMA" "$TURN7_RESULT" "$TMP_LOGS/turn-7.log"
+run_codex_turn_until_authored "$TURN7_PROMPT" "$RUNTIME_FINAL_SCHEMA" \
+  "$TURN7_RESULT" "$TMP_LOGS/turn-7.log" "$PROJECT" review.md
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_approved_unchanged "$RESEARCH_HASH" "$PROJECT/research.md" "$PROJECT/sources.md"
 assert_approved_unchanged "$CONCEPT_HASH" "$PROJECT/concepts.md"
