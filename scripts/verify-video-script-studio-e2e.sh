@@ -461,11 +461,10 @@ from pathlib import Path
 destination = Path(sys.argv[1])
 project, approved_stage, approved_files, digest, next_gate, next_artifact, instructions, skill_dir = sys.argv[2:]
 expected_pending_stage = f"{next_gate}_pending"
-approve_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py approve --project {shlex.quote(project)} --stage {shlex.quote(approved_stage)}"
 status_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py status --project {shlex.quote(project)}"
 text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是新的独立会话，必须先运行 status，以 project.yaml 和状态命令为准；读取当前阶段需要的产物，不得改写已经批准的上游文件。
 
-我已逐字审阅 `{approved_files}`，其组合 SHA-256 为 `{digest}`。我现在明确批准这一个精确版本的 `{approved_stage}` 阶段；任何字节变化都会使本批准失效。批准不是口头确认：逐字运行 `{approve_command}`，确认退出码为 0；失败就停止。批准后再次运行 status：逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 `{expected_pending_stage}` 且 approvals.{approved_stage} 为 approved，否则停止。
+我已逐字审阅 `{approved_files}`，其组合 SHA-256 为 `{digest}`。我已明确批准这一个精确版本的 `{approved_stage}` 阶段，批准已由验收器持久化；任何字节变化都会使本批准失效。先逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 `{expected_pending_stage}` 且 approvals.{approved_stage} 为 approved，否则停止；不得重复 approve。
 
 {instructions}
 
@@ -487,13 +486,12 @@ from pathlib import Path
 
 destination = Path(sys.argv[1])
 project, digest, skill_dir = sys.argv[2:]
-approve_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py approve --project {shlex.quote(project)} --stage script"
 status_command = f"cd {shlex.quote(skill_dir)} && python3 scripts/state_manager.py status --project {shlex.quote(project)}"
 text = f"""使用 $video-script-studio 继续现有项目 `{project}`。这是第六个全新临时会话。必须先运行 status，以 project.yaml 和状态命令为准；不得修改已批准的 brief.md、research.md、sources.md、concepts.md 或 outline.md。
 
-我已逐字审阅 `script.md`，其 SHA-256 为 `{digest}`。我现在明确批准这个精确脚本版本；任何字节变化都会使批准失效。请执行 script approve，然后完成 storyboard.md、assets.md、publish.md。
+我已逐字审阅 `script.md`，其 SHA-256 为 `{digest}`。我现在明确批准这个精确脚本版本，批准已由验收器持久化；任何字节变化都会使批准失效。不得重复 approve；请完成 storyboard.md、assets.md、publish.md。
 
-“批准”必须是实际状态机动作，不是口头确认：先逐字运行 `{approve_command}`，确认批准命令退出码为 0；若失败必须停止，不得伪造回执。完成三个制作文件后，再次运行 status：逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 script_approved，且 approvals 中 brief、research、concept、outline、script 全部为 approved；否则停止，不得输出成功 JSON。
+先逐字运行 `{status_command}`，解析 JSON，必须确认 stage 为 script_approved，且 approvals 中 brief、research、concept、outline、script 全部为 approved；否则停止。完成三个制作文件后再次运行同一 status 命令复核；状态不符时不得输出成功 JSON。
 
 必须兑现已批准的视觉随笔契约：使用稳定场景编号 S01—S05；轮胎纹理拓印的可见试做；油墨糊掉路径并撕裂纸面的失败；裂痕由失败痕迹变成路线；车轮空转、滚墨、撕纸等环境声；至少三处明确写“无旁白”，旁白只补不可见的意义转变。storyboard.md 必须使用三个独立二级标题 ## 可见行动、## 视觉母题、## 环境声，每个标题下至少写一句实质内容。不得复制 Gawx 的具体作品、标题或措辞，不得生成媒体或发布。
 
@@ -544,6 +542,25 @@ import sys
 from pathlib import Path
 
 print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
+persist_approval() {
+  local project=$1
+  local stage=$2
+  local result="$RUN_ROOT/approval-${stage}.json"
+  "$ENV_BIN" -i PATH="$ISOLATED_PATH" HOME="$TMP_HOME" TMPDIR="$TMP_TMPDIR" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    "$PYTHON_BIN" "$INSTALLED_SKILL/scripts/state_manager.py" approve \
+    --project "$project" --stage "$stage" >"$result"
+  "$PYTHON_BIN" - "$result" "$stage" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(value, dict):
+    raise SystemExit("approval command returned an invalid result")
 PY
 }
 
@@ -759,6 +776,8 @@ PY
 BRIEF_HASH="$(combined_sha256 "$PROJECT/brief.md")"
 SNAPSHOT1="$RUN_ROOT/snapshot-1.json"
 snapshot_project "$PROJECT" "$SNAPSHOT1"
+persist_approval "$PROJECT" brief
+assert_exact_approvals "$PROJECT" research_pending "brief" "$RUN_ROOT/status-brief-approved.json"
 
 TURN2_PROMPT="$RUN_ROOT/turn-2.md"
 TURN2_RESULT="$RUN_ROOT/turn-2.json"
@@ -807,6 +826,8 @@ SNAPSHOT2="$RUN_ROOT/snapshot-2.json"
 snapshot_project "$PROJECT" "$SNAPSHOT2"
 assert_only_paths_changed "$SNAPSHOT1" "$SNAPSHOT2" project.yaml research.md sources.md
 RESEARCH_HASH="$(combined_sha256 "$PROJECT/research.md" "$PROJECT/sources.md")"
+persist_approval "$PROJECT" research
+assert_exact_approvals "$PROJECT" concept_pending "brief,research" "$RUN_ROOT/status-research-approved.json"
 
 TURN3_PROMPT="$RUN_ROOT/turn-3.md"
 TURN3_RESULT="$RUN_ROOT/turn-3.json"
@@ -825,6 +846,8 @@ SNAPSHOT3="$RUN_ROOT/snapshot-3.json"
 snapshot_project "$PROJECT" "$SNAPSHOT3"
 assert_only_paths_changed "$SNAPSHOT2" "$SNAPSHOT3" project.yaml concepts.md
 CONCEPT_HASH="$(combined_sha256 "$PROJECT/concepts.md")"
+persist_approval "$PROJECT" concept
+assert_exact_approvals "$PROJECT" outline_pending "brief,research,concept" "$RUN_ROOT/status-concept-approved.json"
 
 TURN4_PROMPT="$RUN_ROOT/turn-4.md"
 TURN4_RESULT="$RUN_ROOT/turn-4.json"
@@ -844,6 +867,8 @@ SNAPSHOT4="$RUN_ROOT/snapshot-4.json"
 snapshot_project "$PROJECT" "$SNAPSHOT4"
 assert_only_paths_changed "$SNAPSHOT3" "$SNAPSHOT4" project.yaml outline.md
 OUTLINE_HASH="$(combined_sha256 "$PROJECT/outline.md")"
+persist_approval "$PROJECT" outline
+assert_exact_approvals "$PROJECT" script_pending "brief,research,concept,outline" "$RUN_ROOT/status-outline-approved.json"
 
 DURATION_INPUT="$RUN_ROOT/duration-input.json"
 DURATION_RESULT="$RUN_ROOT/duration-result.json"
@@ -916,6 +941,8 @@ SNAPSHOT5="$RUN_ROOT/snapshot-5.json"
 snapshot_project "$PROJECT" "$SNAPSHOT5"
 assert_only_paths_changed "$SNAPSHOT4" "$SNAPSHOT5" project.yaml script.md
 SCRIPT_HASH="$(combined_sha256 "$PROJECT/script.md")"
+persist_approval "$PROJECT" script
+assert_exact_approvals "$PROJECT" script_approved "brief,research,concept,outline,script" "$RUN_ROOT/status-script-approved.json"
 
 TURN6_PROMPT="$RUN_ROOT/turn-6.md"
 TURN6_RESULT="$RUN_ROOT/turn-6.json"

@@ -216,7 +216,7 @@ class HarnessContractTests(unittest.TestCase):
             7, content.count('assert_matches_initializer_baseline "$PROJECT"')
         )
         self.assertEqual(6, content.count('assert_only_paths_changed "$SNAPSHOT'))
-        self.assertEqual(7, content.count('assert_exact_approvals "$PROJECT"'))
+        self.assertEqual(12, content.count('assert_exact_approvals "$PROJECT"'))
         self.assertIn("from init_project import init_project", content)
         for allowlist in (
             "project.yaml research.md sources.md",
@@ -260,16 +260,19 @@ class HarnessContractTests(unittest.TestCase):
             "storyboard stage is missing a substantive route anchor",
             "每个标题下至少写一句实质内容",
             "## 可见行动、## 视觉母题、## 环境声",
-            "python3 scripts/state_manager.py approve --project",
-            "--stage script",
-            "再次运行 status",
+            '$INSTALLED_SKILL/scripts/state_manager.py" approve',
+            '--project "$project"',
+            '--stage "$stage"',
+            "再次运行同一 status",
             "script_approved",
             '"schema_version":1',
             "research stage source manifest is invalid",
             "expected_pending_stage",
-            "批准后再次运行 status",
+            "批准已由验收器持久化",
         ):
             self.assertIn(required, content)
+        self.assertIn("persist_approval()", content)
+        self.assertEqual(5, content.count('persist_approval "$PROJECT"'))
         self.assertTrue((E2E_ROOT / "review-result.schema.json").is_file())
 
     def test_prompts_and_schemas_require_real_staged_completion(self) -> None:
