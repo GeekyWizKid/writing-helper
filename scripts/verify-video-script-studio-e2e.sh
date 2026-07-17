@@ -759,13 +759,44 @@ TURN2_PROMPT="$RUN_ROOT/turn-2.md"
 TURN2_RESULT="$RUN_ROOT/turn-2.json"
 TURN2_SCHEMA="$RUN_ROOT/turn-2.schema.json"
 write_resume_prompt "$TURN2_PROMPT" "$PROJECT" brief "brief.md" "$BRIEF_HASH" research research.md \
-  "记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md，sources/claims 均为空；把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。"
+  '记录本项目不需要外部研究的明确理由；写 research.md 与严格 JSON frontmatter 的 sources.md。frontmatter 必须是合法 JSON 对象且字段只能有这五项：{"schema_version":1,"research_required":false,"decision_reason":"本项目只使用用户给定的创作命题，不引入外部事实主张。","sources":[],"claims":[]}；不得省略 schema_version，不得把数字 1 写成字符串。把项目状态中的 research 与 sources disposition 从 undecided 改为明确的 not-required。完成后停止。'
 write_gate_schema "$TURN2_SCHEMA" research research.md
 run_codex_turn "$TURN2_PROMPT" "$TURN2_SCHEMA" "$TURN2_RESULT" "$TMP_LOGS/turn-2.log"
 assert_approved_unchanged "$BRIEF_HASH" "$PROJECT/brief.md"
 assert_gate_result "$TURN2_RESULT" "$PROJECT" research research.md
 assert_exact_approvals "$PROJECT" research_pending "brief" "$RUN_ROOT/status-2.json"
 assert_matches_initializer_baseline "$PROJECT" brief.md research.md sources.md
+"$PYTHON_BIN" - "$INSTALLED_SKILL/scripts" "$PROJECT/sources.md" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from validate_sources import validate
+
+parts = Path(sys.argv[2]).read_text(encoding="utf-8").split("---", 2)
+try:
+    manifest = json.loads(parts[1]) if len(parts) == 3 else None
+except (TypeError, ValueError):
+    manifest = None
+expected_fields = {
+    "schema_version", "research_required", "decision_reason", "sources", "claims",
+}
+valid_shape = (
+    isinstance(manifest, dict)
+    and set(manifest) == expected_fields
+    and type(manifest.get("schema_version")) is int
+    and manifest.get("schema_version") == 1
+    and manifest.get("research_required") is False
+    and isinstance(manifest.get("decision_reason"), str)
+    and bool(manifest.get("decision_reason", "").strip())
+    and manifest.get("sources") == []
+    and manifest.get("claims") == []
+)
+result = validate(manifest, "") if isinstance(manifest, dict) else {"valid": False}
+if not valid_shape or result.get("valid") is not True:
+    raise SystemExit("research stage source manifest is invalid")
+PY
 SNAPSHOT2="$RUN_ROOT/snapshot-2.json"
 snapshot_project "$PROJECT" "$SNAPSHOT2"
 assert_only_paths_changed "$SNAPSHOT1" "$SNAPSHOT2" project.yaml research.md sources.md
